@@ -3,7 +3,7 @@ from genlayer import *
 import json
 from dataclasses import dataclass
 
-# ParaNusa - Parametric Insurance Bencana Alam Nusantara (GenLayer).
+# ParaNusa - Parametric Disaster Insurance for the Archipelago (GenLayer).
 # Trigger: drought | flood | earthquake. Data: Open-Meteo + USGS.
 
 
@@ -44,8 +44,8 @@ def _as_u256(v, what: str) -> u256:
 
 
 def _decide_trigger(disaster_type: str, measured: float, threshold: float) -> bool:
-    # Verdict SELALU dihitung kontrak secara deterministik dari angka terukur.
-    # LLM hanya menulis evidence; ia TIDAK boleh menentukan trigger_met.
+    # Verdict is ALWAYS computed deterministically by the contract from the measured number.
+    # The LLM only writes evidence; it MUST NOT decide trigger_met.
     if disaster_type == "drought":
         return measured < threshold
     if disaster_type == "flood":
@@ -53,8 +53,8 @@ def _decide_trigger(disaster_type: str, measured: float, threshold: float) -> bo
     return measured >= threshold  # earthquake
 
 
-def _fetch_locality(lat: str, lon: str) -> str:    # Best-effort: ikat koordinat ke nama wilayah via sumber independen.
-    # Gagal (rate-limit/offline) -> "" dan assessment tetap jalan.
+def _fetch_locality(lat: str, lon: str) -> str:    # Best-effort: bind coordinates to a place name via an independent source.
+    # Failure (rate-limit/offline) -> "" and assessment still proceeds.
     try:
         res = gl.nondet.web.get(
             "https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=" + lat
@@ -74,15 +74,15 @@ def _fetch_locality(lat: str, lon: str) -> str:    # Best-effort: ikat koordinat
 
 
 def _compare_errors(leader_res, leader_fn) -> bool:
-    # Module-level (bukan method) agar validator_fn tidak menangkap `self`
-    # (instance kontrak = storage class -> warning pickling on-chain).
+    # Module-level (not a method) so validator_fn never captures `self`
+    # (contract instance = storage class -> on-chain pickling warning).
     msg = leader_res.message if hasattr(leader_res, "message") else str(leader_res)
     try:
         leader_fn()
         return False
     except gl.vm.UserError as e:
         vmsg = e.message if hasattr(e, "message") else str(e)
-        # error deterministik harus sama persis, transient cukup sama-sama transient
+        # deterministic errors must match exactly, transient ones only need to both be transient
         if vmsg.startswith(ERROR_TRANSIENT) and msg.startswith(ERROR_TRANSIENT):
             return True
         return vmsg == msg
@@ -98,9 +98,9 @@ class Policy:
     lon: str
     location_name: str
     disaster_type: str
-    # threshold disimpan sebagai string agar stabil di calldata,
-    # contoh: drought "20.0" (mm/30hari), flood "150.0" (mm/7hari),
-    # earthquake "5.0" (magnitudo)
+    # threshold stored as string to stay stable in calldata,
+    # e.g. drought "20.0" (mm/30days), flood "150.0" (mm/7days),
+    # earthquake "5.0" (magnitude)
     threshold: str
     premium: u256
     payout_amount: u256
@@ -118,8 +118,8 @@ class ParaNusa(gl.Contract):
     policies: TreeMap[str, Policy]
     total_premiums: u256
     total_payouts: u256
-    # Jumlah payout polis aktif (belum paid/cancel) - dana ini TERKUNCI,
-    # tidak bisa ditarik owner via withdraw_surplus.
+    # Total payout of active policies (not paid/cancelled) - these funds are LOCKED,
+    # cannot be withdrawn by owner via withdraw_surplus.
     total_locked: u256
 
     def __init__(self):
@@ -129,19 +129,19 @@ class ParaNusa(gl.Contract):
         self.total_payouts = u256(0)
         self.total_locked = u256(0)
 
-    # ---------- helpers (deterministik, di luar nondet) ----------
+    # ---------- helpers (deterministic, outside nondet) ----------
 
     def _require_policy(self, policy_id: str) -> Policy:
         if policy_id not in self.policies:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Policy not found")
         return self.policies[policy_id]
 
-    # ---------- funding & polis ----------
+    # ---------- funding & policies ----------
 
     @gl.public.write.payable
     def fund_pool(self) -> None:
-        # insurer / siapa pun menambah likuiditas pool (saldo kontrak).
-        # Saldo bisa dibaca via self.balance di Studio.
+        # insurer / anyone adds pool liquidity (contract balance).
+        # Balance readable via self.balance in Studio.
         if gl.message.value == u256(0):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Send some GEN to fund pool")
 
@@ -163,12 +163,12 @@ class ParaNusa(gl.Contract):
         if disaster_type not in ALLOWED_DISASTERS:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} disaster_type must be drought/flood/earthquake")
         _validate_coords(lat, lon)
-        _parse_threshold(threshold)  # validasi format saja
+        _parse_threshold(threshold)  # format validation only
         payout_amount = _as_u256(payout_amount, "payout")
         if payout_amount == u256(0):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} payout must be > 0")
 
-        premium = gl.message.value  # boleh 0 untuk demo, >0 untuk produksi
+        premium = gl.message.value  # may be 0 for demo, >0 in production
         holder = gl.message.sender_address
 
         self.policies[policy_id] = Policy(
@@ -193,8 +193,8 @@ class ParaNusa(gl.Contract):
 
     @gl.public.write
     def withdraw_surplus(self, amount: u256) -> None:
-        # Owner menarik dana BEBAS (premi/fee yang tidak menjamin polis aktif).
-        # Dana terkunci = total payout polis aktif; tidak bisa disentuh.
+        # Owner withdraws FREE funds (premiums/fees not backing active policies).
+        # Locked funds = total payout of active policies; untouchable.
         if gl.message.sender_address != self.owner:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Only owner can withdraw")
         amount = _as_u256(amount, "amount")
@@ -209,7 +209,7 @@ class ParaNusa(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Amount exceeds withdrawable surplus")
         gl.get_contract_at(self.owner).emit_transfer(value=amount)
 
-    # ---------- assessment non-deterministik ----------
+    # ---------- non-deterministic assessment ----------
 
     @gl.public.write
     def assess_claim(self, policy_id: str) -> None:
@@ -234,8 +234,8 @@ class ParaNusa(gl.Contract):
         self.policies[policy_id].evidence = result["evidence"][:2000]
 
     def _assess_drought(self, pol) -> dict:
-        # Ekstrak primitif dulu: closure nondet di bawah TIDAK boleh
-        # menangkap objek storage-class (memicu warning pickling on-chain).
+        # Extract primitives first: the nondet closure below MUST NOT
+        # capture storage-class objects (triggers on-chain pickling warning).
         lat, lon = str(pol.lat), str(pol.lon)
         loc = str(pol.location_name)
         threshold = _parse_threshold(pol.threshold)
@@ -260,9 +260,9 @@ class ParaNusa(gl.Contract):
                 total = float(sum(x for x in daily if isinstance(x, (int, float))))
             except Exception as e:
                 raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad Open-Meteo payload: {e}")
-            # Grounding: hitung programmatic. Verdict dihitung KONTRAK (deterministik),
-            # LLM hanya menulis evidence + melaporkan angka. measured_value WAJIB
-            # string ("5.0") karena calldata tidak support float.
+            # Grounding: computed programmatically. Verdict is computed by the CONTRACT (deterministic),
+            # the LLM only writes evidence + reports the number. measured_value MUST be
+            # string ("5.0") because calldata does not support float.
             prompt = (
                 "You are a parametric insurance oracle. Report ONLY the measured "
                 f"30-day rainfall total ({total} mm) for {loc} ({lat},{lon}). "
@@ -297,7 +297,7 @@ class ParaNusa(gl.Contract):
                 return False
             l = leader_res.calldata
             try:
-                # decision harus sama, angka toleransi 2mm (drift antar node)
+                # decision must match, numeric tolerance 2mm (drift between nodes)
                 if bool(l.get("trigger_met")) != bool(v.get("trigger_met")):
                     return False
                 return abs(float(l.get("measured_value", 0)) - float(v.get("measured_value", 0))) <= 2.0
@@ -307,8 +307,8 @@ class ParaNusa(gl.Contract):
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
     def _assess_flood(self, pol) -> dict:
-        # Ekstrak primitif dulu: closure nondet di bawah TIDAK boleh
-        # menangkap objek storage-class (memicu warning pickling on-chain).
+        # Extract primitives first: the nondet closure below MUST NOT
+        # capture storage-class objects (triggers on-chain pickling warning).
         lat, lon = str(pol.lat), str(pol.lon)
         loc = str(pol.location_name)
         threshold = _parse_threshold(pol.threshold)
@@ -376,8 +376,8 @@ class ParaNusa(gl.Contract):
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
     def _assess_earthquake(self, pol) -> dict:
-        # Ekstrak primitif dulu: closure nondet di bawah TIDAK boleh
-        # menangkap objek storage-class (memicu warning pickling on-chain).
+        # Extract primitives first: the nondet closure below MUST NOT
+        # capture storage-class objects (triggers on-chain pickling warning).
         lat, lon = str(pol.lat), str(pol.lon)
         loc = str(pol.location_name)
         threshold = _parse_threshold(pol.threshold)
@@ -440,14 +440,14 @@ class ParaNusa(gl.Contract):
             try:
                 if bool(l.get("trigger_met")) != bool(v.get("trigger_met")):
                     return False
-                # magnitudo toleransi 0.3 (beda pembulatan antar node)
+                # magnitude tolerance 0.3 (rounding differences between nodes)
                 return abs(float(l.get("measured_value", 0)) - float(v.get("measured_value", 0))) <= 0.3
             except Exception:
                 return False
 
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
-    # ---------- payout (deterministik) ----------
+    # ---------- payout (deterministic) ----------
 
     @gl.public.write
     def claim_payout(self, policy_id: str) -> None:
@@ -479,7 +479,7 @@ class ParaNusa(gl.Contract):
         if pol.paid:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Already paid")
         if pol.active:
-            # bebaskan kunci hanya sekali (cancel ganda tidak double-decrement)
+            # release the lock only once (double cancel must not double-decrement)
             self.total_locked = self.total_locked - pol.payout_amount
         self.policies[policy_id].active = False
 
@@ -518,7 +518,7 @@ class ParaNusa(gl.Contract):
 
     @gl.public.view
     def preview_url(self, policy_id: str) -> str:
-        # helper untuk debug: URL apa yang akan di-fetch assess
+        # debug helper: which URL assess will fetch
         pol = self._require_policy(policy_id)
         if pol.disaster_type in ("drought", "flood"):
             days = "30" if pol.disaster_type == "drought" else "7"

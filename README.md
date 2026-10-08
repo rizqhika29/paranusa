@@ -1,193 +1,189 @@
-# 🌋 ParaNusa — Asuransi Parametrik Bencana Alam Nusantara
+# 🌋 ParaNusa — Parametric Disaster Insurance for the Archipelago
 
-> **Proteksi drought, banjir, dan gempa yang membayar otomatis berdasarkan data dunia nyata — tanpa adjuster, tanpa sengketa interpretasi, tanpa oracle terpusat.**
+> **Drought, flood, and earthquake coverage that pays automatically from real-world data — no adjusters, no interpretation disputes, no centralized oracles.**
 
 [![GenLayer](https://img.shields.io/badge/GenLayer-Studionet-F5A524)](https://studio.genlayer.com/)
-[![Contract](https://img.shields.io/badge/contract-0x3FA8...2599-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0x3FA88596a9b88E1Ea81bbD5D90313d9d2C1e2599)
+[![Contract](https://img.shields.io/badge/contract-0xc683...ccF62-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0xc6837aaa90070729d41c6FC9543A1508902ccF62)
 [![Tests](https://img.shields.io/badge/direct--tests-38%20passed-34D399)](#-testing)
 [![Frontend](https://img.shields.io/badge/frontend-Next.js_15-black)](./frontend)
 
-**ParaNusa** (Parametrik Nusantara) adalah protokol asuransi parametrik di atas
-[GenLayer](https://docs.genlayer.com) — blockchain yang konsensusnya memakai
-**validator AI**, bukan sekadar hitungan deterministik. Polis mengunci satu
-pemicu objektif (curah hujan / magnitudo) + ambang + titik koordinat. Saat
-bencana terjadi, kontrak membaca API cuaca/seismik dunia nyata, panel validator
-AI mencapai konsensus, dan payout GEN mengalir langsung ke dompet pemegang polis.
+**ParaNusa** (Parametrik Nusantara) is a parametric insurance protocol on
+[GenLayer](https://docs.genlayer.com) — a blockchain whose consensus runs on
+**AI validators**, not just deterministic computation. A policy locks one
+objective trigger (rainfall / magnitude) + threshold + coordinate. When
+disaster strikes, the contract reads real-world weather and seismic APIs, a
+panel of AI validators reaches consensus, and GEN payout flows straight to the
+holder's wallet.
 
-Tidak ada formulir klaim. Tidak ada "sedang kami proses". Data berkata ya → uang jalan.
+No claim forms. No "under review". Data says yes → money moves.
 
 ---
 
-## 🔴 Live di Studionet
+## 🔴 Live on Studionet
 
 | | |
 |---|---|
-| **Contract** | [`0x3FA88596a9b88E1Ea81bbD5D90313d9d2C1e2599`](https://explorer-studio.genlayer.com/contracts/0x3FA88596a9b88E1Ea81bbD5D90313d9d2C1e2599) |
+| **Contract** | [`0xc6837aaa90070729d41c6FC9543A1508902ccF62`](https://explorer-studio.genlayer.com/contracts/0xc6837aaa90070729d41c6FC9543A1508902ccF62) |
 | **Network** | GenLayer Studionet (chain `61999`) |
-| **Frontend** | [`/app`](./frontend) — terhubung otomatis via `.env.production` |
+| **Frontend** | [`/app`](./frontend) — auto-connected via `.env.production` |
 
-**Rekam jejak uji live (2026-10-08, semua MAJORITY_AGREE):**
-
-| Aksi | Hasil |
-|---|---|
-| `fund_pool` 5 GEN | Pool terisi (5.15 GEN incl. sisa fee) |
-| `create_policy` ×3 | DRO / FLD / EQ-LIVE terbit |
-| `assess` drought Grobogan | 59.2 mm vs ambang 20 mm → **False** (+ locality "Guntur"!) |
-| `assess` flood Jakarta | 63.4 mm vs ambang 150 mm → **False** (+ locality "Jakarta") |
-| `assess` quake Cianjur | **M6.5 vs ambang M5.0 → True** (+ locality "Cugenang"!) |
-| `claim_payout` EQ-LIVE | **0.5 GEN terkirim** ke holder (pool 5.15 → 4.65) |
-| `claim` saat trigger gagal | Validator AGREE `[EXPECTED] Trigger not met` |
-| `cancel_policy`, `withdraw_surplus` | Berhasil, locked 0.5 GEN tetap utuh |
+**Live test record (assess logic verified 2026-10-08 on the previous revision —
+comment-only changes since, behavior identical):** fund 5 GEN, 3 policies,
+3 assesses MAJORITY_AGREE (drought 59.2mm False, flood 63.4mm False,
+quake M6.5 True + Cugenang locality), 0.5 GEN claim delivered, failed-claim
+revert agreed by validators, cancel, withdraw. Fund conservation held.
 
 ---
 
-## ❓ Kenapa asuransi biasa gagal — dan kenapa parametrik + GenLayer menang
+## ❓ Why legacy insurance fails — and why parametric + GenLayer wins
 
-| Asuransi tradisional | ParaNusa |
+| Traditional insurance | ParaNusa |
 |---|---|
-| Klaim butuh surveyor berminggu-minggu | Penilaian on-chain ±30 menit |
-| Klausul karet → sengketa tafsir | Pemicu angka tunggal, verdict deterministik |
-| Oracle terpusat (satu feed = satu titik gagal) | 5+ validator ukur ulang independen |
-| Uang ngendap, audit susah | Pool, premi, payout, locked — semua terbaca publik |
+| Claims need weeks of surveying | On-chain assessment in ~30 minutes |
+| Rubber clauses → interpretation disputes | Single numeric trigger, deterministic verdict |
+| Centralized oracle (one feed = single point of failure) | 5+ validators re-measure independently |
+| Opaque funds, hard audits | Pool, premiums, payouts, locked — all publicly readable |
 
-**Kenapa tidak bisa dibangun di Ethereum biasa?** Smart contract Solidity buta
-internet — butuh oracle Chainlink yang terpusat dan mahal. Intelligent Contract
-GenLayer (Python, jalan di GenVM) **membaca web + memanggil LLM secara native**,
-lalu memaksa para validator AI untuk saling memverifikasi sebelum state berubah.
+**Why can't this be built on plain Ethereum?** Solidity contracts are blind to
+the internet — they need centralized, expensive Chainlink oracles. GenLayer
+Intelligent Contracts (Python, running on GenVM) **read the web and call LLMs
+natively**, then force AI validators to verify each other before state changes.
 
 ---
 
-## ⚙️ Cara kerja (4 langkah)
+## ⚙️ How it works (4 steps)
 
 ```
-fund_pool()                        — insurer mengunci GEN cadangan payout
-  → create_policy(...)             — polis terbit, premi masuk, payout TERKUNCI
-  → assess_claim(policy_id)         — fetch API + LLM + konsensus validator
-  → claim_payout(policy_id)        — GEN mengalir ke holder bila trigger_met
+fund_pool()                        — insurer locks GEN as payout reserve
+  → create_policy(...)             — policy issued, premium in, payout LOCKED
+  → assess_claim(policy_id)         — API fetch + LLM + validator consensus
+  → claim_payout(policy_id)        — GEN flows to holder if trigger_met
 ```
 
-### Di dalam `assess_claim` — bedah 4 tahap
+### Inside `assess_claim` — 4 stages
 
-1. **Fetch data stabil.** Drought/flood → Open-Meteo
-   (`precipitation_sum`, `past_days=30/7`, gratis, tanpa key, JSON stabil).
-   Gempa → katalog USGS (GeoJSON, radius 200 km). Bonus: reverse-geocode
-   BigDataCloud mengikat koordinat ke nama wilayah (best-effort, masuk evidence).
-2. **Hitung programmatic (grounding).** Total hujan dijumlah / magnitudo maks
-   diambil **dengan kode**, disuntik ke prompt sebagai ground truth — LLM
-   dilarang berhitung sendiri sehingga tidak bisa halusinasi angka.
-3. **LLM hanya melapor, kontrak yang memvonis.** Model mengembalikan
-   `measured_value` + `evidence` saja. `trigger_met` dihitung kontrak secara
-   deterministik (`_decide_trigger`) — **model yang berbohong pun tidak bisa
-   memaksa payout** (dibuktikan test adversarial).
-4. **Validator setuju independen.** Tiap validator mengulang fetch + LLM
-   sendiri, lalu hanya membandingkan angka terukur dalam toleransi
-   (hujan ±2 mm, magnitudo ±0.3). Redaksi evidence boleh beda — yang disepakati
-   adalah keputusannya.
+1. **Fetch stable data.** Drought/flood → Open-Meteo
+   (`precipitation_sum`, `past_days=30/7`, free, keyless, stable JSON).
+   Quakes → USGS catalog (GeoJSON, 200 km radius). Bonus: BigDataCloud
+   reverse-geocoding binds coordinates to a place name (best-effort, into evidence).
+2. **Compute programmatically (grounding).** Rainfall totals are summed **in
+   code**, max magnitude taken from GeoJSON, injected into the prompt as ground
+   truth — the LLM is forbidden from doing its own math, so it cannot
+   hallucinate numbers.
+3. **The LLM only reports, the contract decides.** The model returns
+   `measured_value` + `evidence`. `trigger_met` is computed deterministically
+   by the contract (`_decide_trigger`) — **even a lying model cannot force a
+   payout** (proven by adversarial tests).
+4. **Validators agree independently.** Each validator repeats the fetch + LLM,
+   then compares only the measured number within tolerance
+   (rain ±2 mm, magnitude ±0.3). Evidence wording may differ — what is agreed
+   on is the decision.
 
-### Jaring pengaman dana
+### Fund safety nets
 
-- **Payout terkunci:** tiap polis aktif mengunci `payout_amount` di `total_locked`.
-  Owner hanya bisa withdraw **surplus** di atas kunci (`withdraw_surplus`).
-- **Settlement sekali jalan:** flag `paid`, polis nonaktif otomatis, klaim ganda /
-  cancel-then-claim ditolak.
-- **Assess ≠ bayar:** penilaian dan pembayaran dipisah (human-in-the-loop),
-  sesuai anjuran keamanan GenLayer.
-
----
-
-## ✨ Keunggulan teknis
-
-- 🎯 **Verdict deterministik dari data otoritatif** — bukan dari opini model.
-- 🔒 **Anti LLM nakal** — `trigger_met` LLM diabaikan total oleh kontrak.
-- 🌍 **Koordinat terikat wilayah independen** — klaim "lokasi X" dicek silang
-  ke geocode, bukan percaya begitu saja.
-- 💰 **Konservasi dana terbukti** — pool = funded − payout − withdraw, selalu.
-- 🧾 **Semua bisa diaudit** — `get_policy` / `get_stats` / `preview_url`
-  (URL sumber data!) terbuka tanpa login.
-- ⚠️ **Error jujur** — taksonomi `[EXPECTED]` / `[EXTERNAL]` / `[TRANSIENT]`
-  diterjemahkan UI menjadi saran aksi, bukan stack trace.
-- 🚫 **Tx tidak pernah ganda** — hash yang sudah terbit dilacak, status
-  UNCONFIRMED tidak di-mark sukses/gagal buta.
+- **Locked payouts:** every active policy locks its `payout_amount` in
+  `total_locked`. The owner can only withdraw **surplus** above the lock
+  (`withdraw_surplus`).
+- **One-time settlement:** `paid` flag, auto-deactivation, double-claim /
+  cancel-then-claim rejected.
+- **Assess ≠ pay:** assessment and payment are separated (human-in-the-loop),
+  per GenLayer security guidance.
 
 ---
 
-## 🗂️ Struktur project
+## ✨ Technical highlights
+
+- 🎯 **Deterministic verdict from authoritative data** — not from model opinion.
+- 🔒 **Rogue-LLM proof** — the LLM's `trigger_met` is fully ignored by the contract.
+- 🌍 **Coordinates bound to independent locality** — "location X" claims are
+  cross-checked against geocoding, not taken on faith.
+- 💰 **Proven fund conservation** — pool = funded − payouts − withdrawals, always.
+- 🧾 **Everything auditable** — `get_policy` / `get_stats` / `preview_url`
+  (the data-source URL!) open without login.
+- ⚠️ **Honest errors** — `[EXPECTED]` / `[EXTERNAL]` / `[TRANSIENT]` taxonomy
+  translated by the UI into suggested actions, not stack traces.
+- 🚫 **Never double-submit** — issued hashes are tracked; UNCONFIRMED status is
+  never blindly marked success/failure.
+
+---
+
+## 🗂️ Project structure
 
 ```
 paramatic-insurance/
-├── contracts/paranusa.py      # Kontrak ParaNusa (9 method: 6 write, 3 view)
-├── tests/direct/              # 38 direct-mode tests (mock web + LLM)
+├── contracts/paranusa.py      # ParaNusa contract (9 methods: 6 write, 3 view)
+├── tests/direct/              # 38 direct-mode tests (mocked web + LLM)
 ├── frontend/                  # Next.js 15 + genlayer-js (landing, how-it-works, app, profile)
-├── AGENTS.md                  # Source of truth dev (wajib baca sebelum koding)
+├── AGENTS.md                  # Dev source of truth (read before coding)
 └── requirements.txt
 ```
 
-**Method kontrak:** `fund_pool` · `create_policy` · `assess_claim` ·
+**Contract methods:** `fund_pool` · `create_policy` · `assess_claim` ·
 `claim_payout` · `cancel_policy` · `withdraw_surplus` (owner) ·
 `get_policy` · `get_stats` · `preview_url`.
 
-**Frontend:** landing + `/how-it-works` + `/app` (pool, buat polis, lacak &
-aksi, tx tracker + link explorer, handling sukses/gagal) + `/profile`
-(riwayat polis per wallet, filter, statistik).
+**Frontend:** landing + `/how-it-works` + `/app` (pool, create policy, track &
+act, tx tracker + explorer links, success/failure handling) + `/profile`
+(per-wallet policy history, filters, stats).
 
 ---
 
 ## 🚀 Quickstart
 
-### 1. Kontrak (Python 3.12+)
+### 1. Contract (Python 3.12+)
 
 ```bash
 pip install -r requirements.txt
-genvm-lint check contracts/paranusa.py   # harus {"ok":true}
-pytest tests/direct/ -v                  # 38 passed, ~1 detik
+genvm-lint check contracts/paranusa.py   # must be {"ok":true}
+pytest tests/direct/ -v                  # 38 passed, ~1 second
 ```
 
 ### 2. Frontend
 
 ```bash
 cd frontend && npm install
-npm run dev    # http://localhost:3000  (kontrak live prefill otomatis)
+npm run dev    # http://localhost:3000  (live contract prefilled)
 ```
 
-Deploy Vercel: import repo, **Root Directory = `frontend`**, deploy —
-env live sudah baked via `.env.production`.
+Vercel deploy: import the repo, **Root Directory = `frontend`**, deploy —
+live env is baked in via `.env.production`.
 
-### 3. Coba live (butuh wallet + GEN Studionet)
+### 3. Try it live (needs wallet + Studionet GEN)
 
-1. Buka `/app` → hubungkan MetaMask (chain Studionet `61999`).
-2. Buat polis (preset Grobogan/Karawang/Jakarta/Cianjur tersedia).
-3. `Assess` → tunggu konsensus ±30 mnt (hash bisa dilacak di explorer).
-4. Trigger met → `Claim`. Tidak met → coba skenario gempa Cianjur.
+1. Open `/app` → connect MetaMask (Studionet chain `61999`).
+2. Create a policy (Grobogan/Karawang/Jakarta/Cianjur presets included).
+3. `Assess` → wait ~30 min for consensus (track the hash in the explorer).
+4. Trigger met → `Claim`. Not met → try the Cianjur quake scenario.
 
 ---
 
 ## 🧪 Testing
 
-- **Direct-mode (38 test):** semua method + negative paths — duplikat ID,
-  koordinat/threshold ngawur, API 5xx → TRANSIENT, payload malformed,
-  USGS kosong, **LLM bohong** (klaim trigger palsu → ditolak),
-  garbage measurement (fallback hitungan), cancel-then-claim, guard withdraw,
-  konservasi dana, ASCII-guard (loader on-chain tolak non-ASCII!).
-- **Live Studionet:** tabel di atas — data + LLM + konsensus beneran.
+- **Direct-mode (38 tests):** every method + negative paths — duplicate IDs,
+  garbage coordinates/thresholds, API 5xx → TRANSIENT, malformed payloads,
+  empty USGS, **lying LLM** (fake trigger claim → rejected),
+  garbage measurement (computation fallback), cancel-then-claim, withdraw
+  guards, fund conservation, ASCII-guard (on-chain loader rejects non-ASCII!).
+- **Live Studionet:** the table above — real data + real LLM + real consensus.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [x] Fase 1 — riset + kontrak MVP + test
-- [x] Fase 2 — lint hijau + deploy + uji live Studionet
-- [x] Fase 3 — frontend (landing, app, profile)
-- [ ] **Fase 4 — dispute/challenge:** challenge window + expiry/refund,
-      unilateral recovery, authenticated dispute parties, appeal yang
-      memvalidasi klaim evidence (bukan reasoning mentah), konsensus persentase
-      untuk partial payout. Syarat dari review staff GenLayer.
-- [ ] Fase 5 — Bradbury/testnet utama + audit final
+- [x] Phase 1 — research + MVP contract + tests
+- [x] Phase 2 — green lint + Studionet deploy + live tests
+- [x] Phase 3 — frontend (landing, app, profile)
+- [ ] **Phase 4 — disputes/challenges:** challenge window + expiry/refund,
+      unilateral recovery, authenticated dispute parties, appeals that validate
+      evidence claims (not raw reasoning), percentage consensus for partial
+      payouts. Required by GenLayer staff review.
+- [ ] Phase 5 — Bradbury/main testnet + final audit
 
 ---
 
-## 📚 Referensi
+## 📚 References
 
 - [GenLayer Docs](https://docs.genlayer.com) · [Skills](https://skills.genlayer.com/)
 - [GenLayer Project Boilerplate](https://github.com/genlayerlabs/genlayer-project-boilerplate)
-- [genlayer-oracles](https://github.com/Usman3801/genlayer-oracles) (pola oracle)
-- Aturan main project ini: [`AGENTS.md`](./AGENTS.md) — dibaca sebelum koding.
+- [genlayer-oracles](https://github.com/Usman3801/genlayer-oracles) (oracle patterns)
+- Project ground rules: [`AGENTS.md`](./AGENTS.md) — read before coding.
