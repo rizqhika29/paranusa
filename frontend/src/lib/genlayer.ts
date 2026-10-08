@@ -1,9 +1,11 @@
 "use client";
-// GenLayer access layer: clients, reads, writes with the correct lifecycle
-// estimate -> submit -> decision -> finalization + isSuccessful verification.
-import { createClient, isSuccessful } from "genlayer-js";
+// GenLayer access layer (genlayer-js v1 — the Studionet-compatible line).
+// v2 RC reads/writes are not processed by current Studionet validators
+// (0 rounds, NO_MAJORITY), so the app pins v1: plain readContract,
+// fee-less writeContract (node assigns fees, CLI-style), and polling
+// getTransaction until FINALIZED + leader-result verification.
+import { createClient } from "genlayer-js";
 import { localnet, studionet, testnetBradbury } from "genlayer-js/chains";
-import { TransactionHashVariant } from "genlayer-js/types";
 import type { NetworkKey } from "./config";
 
 const CHAIN_MAP = {
@@ -19,7 +21,7 @@ export function getChain(network: NetworkKey) {
   return CHAIN_MAP[network];
 }
 
-/** Client read-only (tanpa wallet). */
+/** Read-only client (no wallet). */
 export function readOnlyClient(network: NetworkKey): GenClient {
   return createClient({ chain: getChain(network) });
 }
@@ -69,7 +71,6 @@ export async function readPolicy(
     address: contract,
     functionName: "get_policy",
     args: [policyId],
-    transactionHashVariant: TransactionHashVariant.LATEST_FINAL,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })) as any;
   return {
@@ -90,11 +91,11 @@ export async function readPolicy(
   };
 }
 
-export async function readStats(client: GenClient, contract: string): Promise<PoolStats> {  const r = (await client.readContract({
+export async function readStats(client: GenClient, contract: string): Promise<PoolStats> {
+  const r = (await client.readContract({
     address: contract,
     functionName: "get_stats",
     args: [],
-    transactionHashVariant: TransactionHashVariant.LATEST_FINAL,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })) as any;
   return {
@@ -122,13 +123,47 @@ export interface StageCallback {
 export interface WriteOptions {
   value?: bigint;
   onStage?: StageCallback;
+  timeoutMs?: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function leaderResultOf(tx: any): any {
+  const receipts = tx?.consensus_data?.leader_receipt;
+  if (Array.isArray(receipts) && receipts.length > 0) return receipts[0]?.result;
+  return undefined;
+}
+
+function successError(tx: unknown, hash: string): Error | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const t = tx as any;
+  if (t?.result_name && t.result_name !== "MAJORITY_AGREE") {
+    return new Error(`Consensus not reached: ${String(t.result_name)}`);
+  }
+  const res = leaderResultOf(t);
+  if (res && typeof res === "object") {
+    if (res.status === "rollback") {
+      const msg = typeof res.payload === "string" ? res.payload : "Contract reverted execution";
+      return new Error(msg);
+    }
+    if (res.status && res.status !== "return") {
+      return new Error(`Contract execution failed: ${String(res.status)}`);
+    }
+  }
+  if (t?.result_name !== "MAJORITY_AGREE") {
+    return new Error(`Consensus not reached: ${String(t?.result_name ?? "unknown")}`);
+  }
+  return null;
 }
 
 /**
- * Correct write lifecycle (docs: writing-data):
- * estimate -> writeContract(+fees) -> waitForDecision -> waitForFinalization
- * -> isSuccessful. ALWAYS check isSuccessful, not just ACCEPTED/FINALIZED status.
- * A timeout after submit does NOT mean failure — the hash is still tracked.
+ * Write lifecycle on Studionet (v1 lib):
+ * writeContract (no explicit fees — node assigns them) -> poll getTransaction
+ * until FINALIZED -> verify MAJORITY_AGREE + leader return (not rollback).
+ * A poll timeout after submit does NOT mean failure — the hash stays tracked.
  */
 export async function writeWithLifecycle(
   client: GenClient,
@@ -136,48 +171,54 @@ export async function writeWithLifecycle(
   opts: WriteOptions = {}
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<{ hash: string; receipt: any }> {
-  const { onStage, value } = opts;
-  onStage?.("estimating");
+  const { onStage, value, timeoutMs = 50 * 60 * 1000 } = opts;
   const payload = { ...call, ...(value !== undefined ? { value } : {}) };
-  // Fee estimation needs Studio-only sim_* RPCs — unavailable on public
-  // testnets. Fall back to fee-less submission (node assigns fees, CLI-style).
-  let fees: { distribution: unknown; feeValue: unknown } | undefined;
-  try {
-    const estimate = await client.estimateTransactionFeesForWrite(payload);
-    fees = { distribution: estimate.distribution, feeValue: estimate.feeValue };
-  } catch {
-    fees = undefined;
-  }
 
   onStage?.("awaiting-signature");
-  const hash: string = await client.writeContract({
-    ...payload,
-    ...(fees ? { fees } : {}),
-  });
+  const hash: string = await client.writeContract({ ...payload });
 
   onStage?.("submitted", hash);
-  await client.waitForDecision({ hash });
-  onStage?.("decided", hash);
+  const deadline = Date.now() + timeoutMs;
+  let decided = false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let tx: any = null;
+  for (;;) {
+    try {
+      tx = await client.getTransaction({ hash });
+    } catch {
+      tx = null;
+    }
+    if (tx) {
+      const rounds = Number(tx.num_of_rounds ?? 0);
+      if (!decided && (rounds > 0 || tx.last_leader)) {
+        decided = true;
+        onStage?.("decided", hash);
+      }
+      if (tx.statusName === "FINALIZED" || tx.status_name === "FINALIZED") {
+        break;
+      }
+    }
+    if (Date.now() > deadline) {
+      const err = new Error(
+        "Confirmation timeout — the tx was submitted but finalization was not observed in time."
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (err as any).txHash = hash;
+      throw err;
+    }
+    await sleep(15000);
+  }
   onStage?.("finalizing", hash);
-  const receipt = await client.waitForFinalization({ hash });
-  if (!isSuccessful(receipt)) {
-    const err = new Error(
-      `Contract execution failed: ${String(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (receipt as any).statusName ?? (receipt as any).status ?? "UNKNOWN"
-      )} / ${String(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (receipt as any).txExecutionResultName ?? (receipt as any).txExecutionResult ?? "UNKNOWN"
-      )}`
-    );
+  const fail = successError(tx, hash);
+  if (fail) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (err as any).receipt = receipt;
+    (fail as any).txHash = hash;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (err as any).txHash = hash;
-    throw err;
+    (fail as any).receipt = tx;
+    throw fail;
   }
   onStage?.("done", hash);
-  return { hash, receipt };
+  return { hash, receipt: tx };
 }
 
 export function policyStatusLabel(p: PolicyView): { text: string; tone: string } {
@@ -198,7 +239,6 @@ export async function readPreviewUrl(
     address: contract,
     functionName: "preview_url",
     args: [policyId],
-    transactionHashVariant: TransactionHashVariant.LATEST_FINAL,
   });
   return String(r ?? "");
 }
