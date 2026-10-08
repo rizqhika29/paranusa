@@ -129,6 +129,13 @@
 - [ ] Berikutnya: uji dashboard end-to-end (butuh wallet browser + GEN),
       lalu Fase 4 (dispute/challenge) bila diminta.
 
+### 2026-10-08 — Sesi 12: Push GitHub + siap Vercel ✅
+- [x] Repo `rizqhika29/paranusa` (main). `.gitignore` lindungi
+      `.deployer-pass`/`.env*`/pycache/node_modules.
+- [x] `frontend/.env.production` terisi kontrak live (public, aman di-commit).
+- [ ] Vercel: import repo, **Root Directory = `frontend`**, deploy
+      (env sudah baked via `.env.production`).
+
 ### 2026-10-08 — Sesi 11: Profile page ✅
 - [x] Index polis per wallet di localStorage (`{id, holder, time}`, migrasi
       entri lama otomatis) + `forgetPolicy`. Network/kontrak tetap locked.
