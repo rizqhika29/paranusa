@@ -16,6 +16,9 @@ export const metadata: Metadata = {
   title: "ParaNusa — Parametric Disaster Insurance for the Archipelago",
   description:
     "Drought, flood, and earthquake policies that pay automatically from real-world data — assessed by GenLayer AI-validator consensus.",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
