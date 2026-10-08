@@ -118,8 +118,11 @@
   2. JS clients send u256 as strings -> storage setter crash. Contract now
      coerces via `_as_u256` (string-args tests exist). Direct tests do NOT catch
      this (proxy auto-roundtrips int->u256).
-  3. `genlayer-js@2.0.0-rc.1` writes get 0-round NO_MAJORITY on Studionet.
-     Use the CLI (bundled 1.1.8, value:0n without fees) or a v1 script + value.
+  3. `genlayer-js@2.0.0-rc.1` reads AND writes are ignored by current Studionet
+     validators (0 rounds NO_MAJORITY / gen_call invalid params). The frontend
+     pins `genlayer-js@1.1.8`: plain readContract, fee-less writeContract
+     (node assigns fees), poll getTransaction to FINALIZED, verify
+     MAJORITY_AGREE + leader `return` (rollback payload surfaces [EXPECTED]).
      `estimate*Fees*` needs `sim_*` (Studio-only).
   4. Always check `isSuccessful`/execution, not just FINALIZED (first deploy was
      FINALIZED but `invalid_contract`).

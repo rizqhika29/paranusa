@@ -42,11 +42,14 @@ NEXT_PUBLIC_DEFAULT_NETWORK=studionet
 
 ## Transaction pattern (per GenLayer docs + live findings)
 
-Every write: `writeContract` → `waitForDecision` → `waitForFinalization` →
-`isSuccessful` check (not just ACCEPTED/FINALIZED status). On Studionet, writes
-go **without** explicit fee estimation (`estimate*Fees*` needs Studio-only
-`sim_*` RPCs; the node assigns fees — same as the CLI). Amounts (`u256`) are
-sent as native BigInt; the contract also coerces decimal strings via `_as_u256`.
+Every write: `writeContract` (no explicit fees — the node assigns them) →
+poll `getTransaction` to FINALIZED → verify MAJORITY_AGREE + leader `return`
+(not `rollback`). A `rollback` payload (e.g. `[EXPECTED] …`) is surfaced as the
+error. `genlayer-js` is pinned to **v1 (1.1.8)**: the v2 RC line is currently
+ignored by Studionet validators for both reads and writes. `estimate*Fees*`
+needs Studio-only `sim_*` RPCs and is skipped on public testnets. Amounts
+(`u256`) are sent as native BigInt; the contract also coerces decimal strings
+via `_as_u256`.
 Errors are classified: user-rejected, [EXPECTED], [EXTERNAL], [TRANSIENT],
 insufficient funds, RPC — each with a suggested action. A submitted hash is
 never blindly re-submitted; unconfirmed txs stay UNCONFIRMED until the explorer
