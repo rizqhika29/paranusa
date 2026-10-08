@@ -25,7 +25,6 @@ import {
 import { classifyWriteError, genToWei, shortAddress, shortHash, weiToGen } from "@/lib/format";
 import { SectionHeading } from "@/components/ui";
 import TxTracker from "@/components/TxTracker";
-import CopyBtn from "@/components/CopyBtn";
 
 type Tab = "create" | "track" | "pool";
 
@@ -40,7 +39,7 @@ const STAGE_LABEL: Record<TxStage, string> = {
 
 export default function AppDashboard() {
   const app = useApp();
-  const { network, contract, wallet, provider, pushToast, trackTx, updateTx, connectWallet, connecting } = app;
+  const { network, contract, wallet, provider, pushToast, trackTx, updateTx } = app;
   const { ready, hint } = useContractReady();
   const [tab, setTab] = useState<Tab>("create");
   const [stats, setStats] = useState<PoolStats | null>(null);
@@ -67,8 +66,6 @@ export default function AppDashboard() {
     refreshStats();
   }, [refreshStats]);
 
-  const explorerContract = NETWORKS[network].explorerContract(contract);
-
   return (
     <div className="wrap">
       <section className="section">
@@ -84,71 +81,6 @@ export default function AppDashboard() {
             UI, but reads and writes need a valid contract address.
           </div>
         )}
-
-        <div className="grid grid-2" style={{ marginBottom: 16 }}>
-          {/* Connected contract (read-only, pinned by deployment) */}
-          <div className="card">
-            <h3>Connected Contract</h3>
-            <div className="kv">
-              <span className="k">Network</span>
-              <span className="v">{NETWORKS[network].label} (chain {NETWORKS[network].chainId})</span>
-            </div>
-            {ready ? (
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
-                {explorerContract ? (
-                  <a className="tx-hash" href={explorerContract} target="_blank" rel="noreferrer">
-                    {shortAddress(contract, 8)} ↗
-                  </a>
-                ) : (
-                  <span className="tx-hash">{shortAddress(contract, 8)}</span>
-                )}
-                <CopyBtn value={contract} label="contract address" />
-              </div>
-            ) : (
-              <p className="muted" style={{ marginBottom: 0 }}>
-                Contract address is configured by deployment.
-              </p>
-            )}
-          </div>
-
-          {/* Wallet */}
-          <div className="card">
-            <h3>Wallet</h3>
-            {wallet ? (
-              <>
-                <div className="kv">
-                  <span className="k">Address</span>
-                  <span className="v" title={wallet}>{shortAddress(wallet, 8)}</span>
-                </div>
-                <div className="kv">
-                  <span className="k">Network</span>
-                  <span className="v">{NETWORKS[network].label}</span>
-                </div>
-                <p className="muted">
-                  Writes (create, assess, claim, fund) use this wallet + GEN fees.
-                  Keep the wallet on the same chain — the app re-attempts the
-                  switch automatically before each transaction.
-                </p>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <CopyBtn value={wallet} label="wallet address" />
-                  <button className="btn btn-ghost btn-sm" onClick={app.disconnectWallet}>
-                    Disconnect
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="muted">
-                  Reading works without a wallet. For transactions, connect an
-                  EIP-1193 wallet (e.g. MetaMask).
-                </p>
-                <button className="btn btn-primary btn-sm" onClick={connectWallet} disabled={connecting}>
-                  {connecting ? "Connecting…" : "Connect Wallet"}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
 
         {/* Pool stats */}
         <div className="grid grid-2" style={{ marginBottom: 16 }}>
