@@ -647,28 +647,78 @@ function PolicyProofs({
   network: NetworkKey;
 }) {
   const [open, setOpen] = useState(false);
-  const related = txs.filter(
-    (t) =>
-      t.policyId === policyId &&
-      t.hash &&
-      /assess|claim/i.test(t.label)
-  );
-  if (related.length === 0) return null;
+  const [manual, setManual] = useState("");
+  const [attached, setAttached] = useState<string[]>([]);
+  // Primary: txs explicitly bound to this policy. Fallback: parse the
+  // "<Action> <POLICY_ID>" label format of txs tracked before binding existed.
+  const related = txs.filter((t) => {
+    if (!t.hash || !/assess|claim/i.test(t.label)) return false;
+    if (t.policyId === policyId) return true;
+    const m = t.label.match(/^(?:Assess claim|Claim payout) (.+)$/i);
+    return m !== null && m[1] === policyId;
+  });
+  const hashes: string[] = [
+    ...new Set([...related.map((t) => t.hash as string), ...attached]),
+  ];
+  if (hashes.length === 0) {
+    return (
+      <div style={{ marginTop: 12 }}>
+        <div className="muted" style={{ marginBottom: 6, fontWeight: 700 }}>AI consensus proof</div>
+        <p className="muted" style={{ margin: "0 0 8px" }}>
+          No assessment tx bound to this policy in this browser (assessed in
+          another session or before proof tracking). Paste its hash to inspect
+          the validator votes and verdict:
+        </p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            className="input"
+            value={manual}
+            onChange={(e) => setManual(e.target.value)}
+            placeholder="0x…"
+            spellCheck={false}
+          />
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={!/^0x[0-9a-fA-F]{64}$/.test(manual.trim())}
+            onClick={() => {
+              setAttached((prev) => [manual.trim(), ...prev].slice(0, 3));
+              setManual("");
+              setOpen(true);
+            }}
+          >
+            Inspect
+          </button>
+        </div>
+        {open && attached.length > 0 && (
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+            {attached.map((h) => (
+              <div key={h} className="card" style={{ padding: 16 }}>
+                <TxConsensus hash={h} network={network} />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
   const latest = related[0];
   return (
     <div style={{ marginTop: 12 }}>
       <button className="btn btn-ghost btn-sm" onClick={() => setOpen(!open)}>
-        {open ? "Hide" : "Show"} AI consensus proof ({related.length} tx{related.length > 1 ? "s" : ""})
+        {open ? "Hide" : "Show"} AI consensus proof ({hashes.length} tx{hashes.length > 1 ? "s" : ""})
       </button>
       {open && (
         <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-          {related.map((t) => (
-            <div key={t.id} className="card" style={{ padding: 16 }}>
-              <div className="muted" style={{ fontWeight: 700, marginBottom: 6 }}>{t.label}</div>
-              {t.hash && <TxConsensus hash={t.hash} network={t.network ?? network} />}
-            </div>
-          ))}
-          {latest.ok === false && (
+          {hashes.map((h) => {
+            const t = related.find((x) => x.hash === h);
+            return (
+              <div key={h} className="card" style={{ padding: 16 }}>
+                {t && <div className="muted" style={{ fontWeight: 700, marginBottom: 6 }}>{t.label}</div>}
+                <TxConsensus hash={h} network={network} />
+              </div>
+            );
+          })}
+          {latest && latest.ok === false && (
             <p className="muted" style={{ margin: 0 }}>
               Latest action did not finalize — check its error in the tracker below.
             </p>
