@@ -166,17 +166,18 @@ async function runWrite(opts: {
   call: { functionName: string; args: unknown[]; value?: bigint };
   successTitle: string;
   successMessage: string;
+  policyId?: string;
   onDone?: () => void;
   onStarted?: () => void;
 }): Promise<string | null> {
-  const { app, label, call, successTitle, successMessage, onDone, onStarted } = opts;
+  const { app, label, call, successTitle, successMessage, policyId, onDone, onStarted } = opts;
   const { network, contract, wallet, provider, pushToast, trackTx, updateTx } = app;
   if (!wallet || !provider) {
     pushToast({ tone: "error", title: "Wallet not connected", message: "Connect a wallet first to submit writes." });
     return null;
   }
   await ensureChain(provider, network);
-  const id = trackTx({ label, hash: null, stage: "estimating", ok: null, network });
+  const id = trackTx({ label, hash: null, stage: "estimating", ok: null, network, policyId });
   onStarted?.();
   try {
     const client = walletClient(network, wallet, provider);
@@ -295,6 +296,7 @@ function CreateForm({ onDone }: { onDone: () => void }) {
     const hash = await runWrite({
       app,
       label: `Create policy ${pid}`,
+      policyId: pid,
       call: {
         functionName: "create_policy",
         args: [pid, lat.trim(), lon.trim(), location.trim(), disaster, threshold.trim(), payoutWei],
@@ -422,7 +424,7 @@ function TrackTab({ onDone, goTrack }: { onDone: () => void; goTrack: () => void
 
 function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: string }) {
   const app = useApp();
-  const { network, contract, pushToast, recentPolicies, rememberPolicy } = app;
+  const { network, contract, pushToast, recentPolicies, rememberPolicy, txs } = app;
   const { ready } = useContractReady();
   const [qid, setQid] = useState("");
   const [policy, setPolicy] = useState<PolicyView | null>(null);
@@ -478,6 +480,7 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
     const hash = await runWrite({
       app,
       label: `${actionLabel} ${pid}`,
+      policyId: pid,
       call: { functionName: kind, args: [pid] },
       successTitle: kind === "claim_payout" ? "Payout sent" : kind === "assess_claim" ? "Assessment finalized" : "Policy cancelled",
       successMessage:
@@ -574,6 +577,7 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
                 <div className="evidence">{policy.evidence}</div>
               </div>
             )}
+            <PolicyProofs policyId={qid.trim()} txs={txs} network={network} />
           </>
         )}
       </div>
@@ -631,8 +635,51 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
   );
 }
 
-/* ---------------- FUND POOL ---------------- */
+/* Proof of what the AI consensus decided for THIS policy: the assess and
+   claim transactions bound to the policy ID (persisted across reloads). */
+function PolicyProofs({
+  policyId,
+  txs,
+  network,
+}: {
+  policyId: string;
+  txs: ReturnType<typeof useApp>["txs"];
+  network: NetworkKey;
+}) {
+  const [open, setOpen] = useState(false);
+  const related = txs.filter(
+    (t) =>
+      t.policyId === policyId &&
+      t.hash &&
+      /assess|claim/i.test(t.label)
+  );
+  if (related.length === 0) return null;
+  const latest = related[0];
+  return (
+    <div style={{ marginTop: 12 }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => setOpen(!open)}>
+        {open ? "Hide" : "Show"} AI consensus proof ({related.length} tx{related.length > 1 ? "s" : ""})
+      </button>
+      {open && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+          {related.map((t) => (
+            <div key={t.id} className="card" style={{ padding: 16 }}>
+              <div className="muted" style={{ fontWeight: 700, marginBottom: 6 }}>{t.label}</div>
+              {t.hash && <TxConsensus hash={t.hash} network={t.network ?? network} />}
+            </div>
+          ))}
+          {latest.ok === false && (
+            <p className="muted" style={{ margin: 0 }}>
+              Latest action did not finalize — check its error in the tracker below.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
+/* ---------------- FUND POOL ---------------- */
 function FundPanel({ onDone }: { onDone: () => void }) {
   const app = useApp();
   const { ready } = useContractReady();

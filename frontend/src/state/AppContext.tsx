@@ -33,6 +33,7 @@ export interface TrackedTx {
   error?: string;
   time: number;
   network: NetworkKey;
+  policyId?: string;
 }
 
 interface AppState {
@@ -71,7 +72,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [provider, setProvider] = useState<unknown>(null);
   const [connecting, setConnecting] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [txs, setTxs] = useState<TrackedTx[]>([]);
+  // Session tx history, persisted so assessment proofs survive reloads.
+  const [txs, setTxs] = useState<TrackedTx[]>(() => {
+    try {
+      const raw = localStorage.getItem("paranusa:txs");
+      if (!raw) return [];
+      const arr = JSON.parse(raw) as TrackedTx[];
+      return Array.isArray(arr) ? arr.filter((t) => t && t.label).slice(0, 20) : [];
+    } catch {
+      return [];
+    }
+  });
   const [recentPolicies, setRecentPolicies] = useState<RecentPolicy[]>([]);
 
   // Note: network + contract are deployment-pinned (env only).
@@ -167,12 +178,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const trackTx = useCallback((t: Omit<TrackedTx, "id" | "time">) => {
     const id = seq++;
-    setTxs((prev) => [{ ...t, id, time: Date.now() }, ...prev].slice(0, 20));
+    setTxs((prev) => {
+      const next = [{ ...t, id, time: Date.now() }, ...prev].slice(0, 20);
+      try {
+        localStorage.setItem("paranusa:txs", JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
     return id;
   }, []);
 
   const updateTx = useCallback((id: number, patch: Partial<TrackedTx>) => {
-    setTxs((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    setTxs((prev) => {
+      const next = prev.map((x) => (x.id === id ? { ...x, ...patch } : x)).slice(0, 20);
+      try {
+        localStorage.setItem("paranusa:txs", JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
   }, []);
 
   const connectWallet = useCallback(async () => {
