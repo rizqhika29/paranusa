@@ -110,6 +110,11 @@ class Policy:
     measured_value: str
     evidence: str
     paid: bool
+    # Tx hash of the assessment that produced the verdict (set via link_proof
+    # by holder/owner AFTER assess finalizes). The contract cannot read its own
+    # tx hash (not exposed in gl.message), so explicit linking is the pattern.
+    # Appended LAST - storage layout is positional, never insert above.
+    assess_tx: str
 
 
 class ParaNusa(gl.Contract):
@@ -186,6 +191,7 @@ class ParaNusa(gl.Contract):
             "",
             "",
             False,
+            "",
         )
         self.policy_count = self.policy_count + u256(1)
         self.total_premiums = self.total_premiums + premium
@@ -450,6 +456,25 @@ class ParaNusa(gl.Contract):
     # ---------- payout (deterministic) ----------
 
     @gl.public.write
+    def link_proof(self, policy_id: str, tx_hash: str) -> None:
+        # Binds the assessment tx hash to the policy so ANY client can read
+        # the consensus proof on-chain (get_policy.assess_tx). Called by the
+        # holder/owner right after the assess tx finalizes. Cheap + deterministic.
+        pol = self._require_policy(policy_id)
+        if gl.message.sender_address != self.owner and gl.message.sender_address != pol.holder:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Not authorized")
+        if not pol.assessed:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Policy not assessed yet")
+        h = tx_hash.strip() if isinstance(tx_hash, str) else ""
+        if len(h) != 66 or not h.startswith("0x"):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invalid tx hash (0x + 64 hex)")
+        try:
+            int(h[2:], 16)
+        except Exception:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Invalid tx hash (0x + 64 hex)")
+        self.policies[policy_id].assess_tx = h
+
+    @gl.public.write
     def claim_payout(self, policy_id: str) -> None:
         pol = self._require_policy(policy_id)
         if pol.holder != gl.message.sender_address and gl.message.sender_address != self.owner:
@@ -503,6 +528,7 @@ class ParaNusa(gl.Contract):
             "measured_value": pol.measured_value,
             "evidence": pol.evidence,
             "paid": pol.paid,
+            "assess_tx": pol.assess_tx,
         }
 
     @gl.public.view

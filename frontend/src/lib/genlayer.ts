@@ -51,6 +51,7 @@ export interface PolicyView {
   measured_value: string;
   evidence: string;
   paid: boolean;
+  assess_tx: string;
 }
 
 export interface PoolStats {
@@ -88,6 +89,7 @@ export async function readPolicy(
     measured_value: String(r.measured_value ?? r[11] ?? ""),
     evidence: String(r.evidence ?? r[12] ?? ""),
     paid: Boolean(r.paid ?? r[13] ?? false),
+    assess_tx: String(r.assess_tx ?? r[14] ?? ""),
   };
 }
 

@@ -106,7 +106,7 @@
 ### 2026-10-08 — Session 9: Studionet Deploy + Full Live Test ✅
 - [x] Account `paranusa-deployer` (`0xdfc3...34f2`), 100 GEN faucet. Keystore in
       `~/.genlayer/keystores/`, password in `.deployer-pass` (NEVER commit).
-- [x] **LIVE:** `0xc6837aaa90070729d41c6FC9543A1508902ccF62`
+- [x] **LIVE:** `0x221940AdE201E4Dd34823156c3A88b55c08b223C`
       (deploy tx `0x160d2a4c...`). Explorer: explorer-studio.genlayer.com.
 - [x] Verified live: fund 5 GEN, create x3 (DRO/FLD/EQ-LIVE),
       assess x3 (MAJORITY_AGREE: drought 59.2mm False, flood 63.4mm False,
@@ -126,7 +126,7 @@
      `estimate*Fees*` needs `sim_*` (Studio-only).
   4. Always check `isSuccessful`/execution, not just FINALIZED (first deploy was
      FINALIZED but `invalid_contract`).
-- [x] Filled `NEXT_PUBLIC_CONTRACT_STUDIONET=0xc683...ccF62` in frontend, tested UI.
+- [x] Filled `NEXT_PUBLIC_CONTRACT_STUDIONET=0x2219...b223C` in frontend, tested UI.
 - [x] `frontend/.env.local` holds the live contract; root + frontend READMEs
       list address + explorer. Fix: fee-less writes when `sim_*` is missing
       (CLI-style fallback). Build OK, 3 pages return 200.
@@ -155,15 +155,29 @@
 ### 2026-10-08 — Session 13: Full English + comment-only redeploy ✅
 - [x] Everything in English: root README, AGENTS.md, contract comments
       (ASCII-only, verified). User-facing contract strings were already English.
-- [x] Redeployed (new address `0xc683...ccF62`) to keep repo/live parity.
+- [x] Redeployed (new address `0x2219...b223C`) to keep repo/live parity.
       Verified live: fund (plain transfer), create DRO-EN (BigInt args OK),
       get_policy/get_stats. Assess logic byte-identical to the verified
       revision — no 30-min re-assess needed.
 - [x] Updated `.env.local`/`.env.production`, both READMEs, session 9 record.
 - [ ] Push + Vercel redeploy (env changed).
 
-### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅
-- [x] `Detected pickling storage class... nondet not supported` warning appears
+### 2026-10-09 — Session 14: On-chain proof binding (link_proof) ✅
+- [x] Docs confirm: NO tx hash / block / nonce exposed to contracts
+      (transaction-context page). Explicit link tx is the canonical pattern.
+- [x] Contract: `assess_tx: str` appended LAST to Policy (layout-safe) +
+      `link_proof(policy_id, tx_hash)` (holder/owner, requires assessed,
+      validates 0x+64hex). Exposed in `get_policy`.
+- [x] Direct tests 39 passed (link flow: pre-assess/format/stranger/owner).
+      Lint methods:10.
+- [x] Frontend: auto-`link_proof` after every successful assess (best-effort,
+      never fails the main action); PolicyProofs reads on-chain `assess_tx`
+      first, then explorer index, local txs, manual hash.
+- [x] Redeployed `0x2219...b223C`. Verified live: fund, create DRO-LINK,
+      assess (53.0mm False), link_proof, `assess_tx` readable on-chain.
+- [x] Updated envs + docs. Old `0xc683...` had one test policy, no funds locked.
+
+### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
       in validator stderr. Cause: nondet closures capturing `self` (via
       `self._compare_errors`) + `Policy` instances (storage class).
 - [x] RULED BENIGN: 3 live assesses reached MAJORITY_AGREE with correct measured
@@ -173,7 +187,7 @@
       module level, `_assess_*` extract primitives (`lat/lon/loc/threshold`)
       so nondet closures are storage-class-free and `self`-free.
 - [ ] NO redeploy for now (zero behavior change). Batch with the next
-      functional redeploy. Live contract `0xc683...ccF62` stays valid.
+      functional redeploy. Live contract `0x2219...b223C` stays valid.
 
 ## 3. Architecture (MVP)
 
@@ -181,6 +195,7 @@
 fund_pool() [payable] — insurer funds GEN liquidity
   -> create_policy(policy_id, lat, lon, location_name, disaster_type, threshold, payout) [payable]
   -> assess_claim(policy_id) [NONDET]
+  -> link_proof(policy_id, tx_hash) [holder/owner binds assess tx on-chain]
   -> claim_payout(policy_id) [transfer GEN to holder]
   -> cancel_policy / get_policy / get_stats / preview_url
 ```

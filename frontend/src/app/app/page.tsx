@@ -425,7 +425,7 @@ function TrackTab({ onDone, goTrack }: { onDone: () => void; goTrack: () => void
 
 function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: string }) {
   const app = useApp();
-  const { network, contract, pushToast, recentPolicies, rememberPolicy, txs } = app;
+  const { network, contract, pushToast, recentPolicies, rememberPolicy, txs, provider } = app;
   const { ready } = useContractReady();
   const [qid, setQid] = useState("");
   const [policy, setPolicy] = useState<PolicyView | null>(null);
@@ -507,6 +507,25 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
     if (hash) {
       setLastHash(hash);
       setLastLabel(actionLabel);
+      // Bind the proof on-chain so ANY client can read it (get_policy.assess_tx).
+      // Best-effort: never fail the main action if linking hiccups.
+      if (kind === "assess_claim") {
+        try {
+          const linkClient = walletClient(network, app.wallet as string, provider);
+          await writeWithLifecycle(
+            linkClient,
+            { address: contract, functionName: "link_proof", args: [pid, hash] },
+            {}
+          );
+          await lookup(pid);
+        } catch (e) {
+          pushToast({
+            tone: "info",
+            title: "Proof link skipped",
+            message: `Assessment is final; on-chain linking failed (${e instanceof Error ? e.message.slice(0, 120) : "error"}). The hash above still proves it.`,
+          });
+        }
+      }
     }
     setBusy(null);
   }
@@ -578,7 +597,7 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
                 <div className="evidence">{policy.evidence}</div>
               </div>
             )}
-            <PolicyProofs policyId={qid.trim()} assessed={policy.assessed} txs={txs} network={network} contract={contract} />
+            <PolicyProofs policyId={qid.trim()} assessed={policy.assessed} assessTx={policy.assess_tx} txs={txs} network={network} contract={contract} />
           </>
         )}
       </div>
@@ -641,12 +660,14 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
 function PolicyProofs({
   policyId,
   assessed,
+  assessTx,
   txs,
   network,
   contract,
 }: {
   policyId: string;
   assessed: boolean;
+  assessTx: string;
   txs: ReturnType<typeof useApp>["txs"];
   network: NetworkKey;
   contract: string;
@@ -697,8 +718,8 @@ function PolicyProofs({
   const hashes: string[] = [
     ...new Set([...related.map((t) => t.hash as string), ...attached]),
   ];
-  // Merge: on-chain index first (works on any device), then local session
-  // txs, then manually attached hashes. Dedupe by hash.
+  // Merge: on-chain link first (readable by ANY client, no browser needed),
+  // then explorer index, then local session txs, then manual hashes.
   const entries: { hash: string; label: string }[] = [];
   const seen = new Set<string>();
   const push = (hash: string, label: string) => {
@@ -707,6 +728,8 @@ function PolicyProofs({
       entries.push({ hash, label });
     }
   };
+  if (/^0x[0-9a-fA-F]{64}$/.test((assessTx || "").trim()))
+    push(assessTx.trim(), "Assess claim · linked on-chain");
   for (const c of chain) push(c.hash, `${c.label} · on-chain`);
   for (const t of related) push(t.hash as string, `${t.label} · this browser`);
   for (const h of attached) push(h, "Manual hash");

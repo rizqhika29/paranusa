@@ -574,3 +574,32 @@ def test_string_amount_args_coerced(direct_vm, direct_deploy, direct_owner, dire
     c.create_policy("STR-3", "-7.0", "110.0", "Grobogan", "drought", "20.0", 500)
     with direct_vm.expect_revert("Invalid amount"):
         c.withdraw_surplus("xyz")
+
+
+def test_link_proof_flow(direct_vm, direct_deploy, direct_owner, direct_alice, direct_bob):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    direct_vm.sender = direct_alice
+    _mock_drought(direct_vm, 5.0, True)
+    c.create_policy("LP-1", "-7.0", "110.0", "Grobogan", "drought", "20.0", 500)
+    # belum assessed -> tolak
+    with direct_vm.expect_revert("not assessed"):
+        c.link_proof("LP-1", "0x" + "ab" * 32)
+    c.assess_claim("LP-1")
+    # format salah -> tolak
+    with direct_vm.expect_revert("Invalid tx hash"):
+        c.link_proof("LP-1", "not-a-hash")
+    with direct_vm.expect_revert("Invalid tx hash"):
+        c.link_proof("LP-1", "0x1234")
+    # orang asing -> tolak
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("Not authorized"):
+        c.link_proof("LP-1", "0x" + "ab" * 32)
+    # holder sukses; terbaca via get_policy (on-chain binding)
+    direct_vm.sender = direct_alice
+    c.link_proof("LP-1", "0x" + "ab" * 32)
+    assert c.get_policy("LP-1")["assess_tx"] == "0x" + "ab" * 32
+    # owner juga boleh (overwrite sah)
+    direct_vm.sender = direct_owner
+    c.link_proof("LP-1", "0x" + "cd" * 32)
+    assert c.get_policy("LP-1")["assess_tx"] == "0x" + "cd" * 32
+    direct_vm.clear_mocks()
