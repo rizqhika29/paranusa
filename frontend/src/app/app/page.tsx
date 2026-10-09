@@ -25,6 +25,7 @@ import {
 import { classifyWriteError, genToWei, shortAddress, shortHash, weiToGen } from "@/lib/format";
 import { SectionHeading } from "@/components/ui";
 import TxTracker from "@/components/TxTracker";
+import TxConsensus from "@/components/TxConsensus";
 
 type Tab = "create" | "track" | "pool";
 
@@ -429,10 +430,13 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [lookupErr, setLookupErr] = useState("");
+  const [lastHash, setLastHash] = useState<string | null>(null);
+  const [lastLabel, setLastLabel] = useState("");
 
   async function lookup(id?: string) {
     const pid = (id ?? qid).trim();
     setLookupErr("");
+    setLastHash(null);
     if (!ready) return setLookupErr("Contract address is not valid yet.");
     if (!pid) return setLookupErr("Enter a policy ID first.");
     setLoading(true);
@@ -470,9 +474,10 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
     }
     const pid = qid.trim();
     setBusy(kind);
-    await runWrite({
+    const actionLabel = kind === "assess_claim" ? "Assess claim" : kind === "claim_payout" ? "Claim payout" : "Cancel policy";
+    const hash = await runWrite({
       app,
-      label: `${kind === "assess_claim" ? "Assess claim" : kind === "claim_payout" ? "Claim payout" : "Cancel policy"} ${pid}`,
+      label: `${actionLabel} ${pid}`,
       call: { functionName: kind, args: [pid] },
       successTitle: kind === "claim_payout" ? "Payout sent" : kind === "assess_claim" ? "Assessment finalized" : "Policy cancelled",
       successMessage:
@@ -495,6 +500,10 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
         await lookup(pid);
       },
     });
+    if (hash) {
+      setLastHash(hash);
+      setLastLabel(actionLabel);
+    }
     setBusy(null);
   }
 
@@ -576,10 +585,15 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <button
                 className="btn btn-primary"
-                disabled={busy !== null || policy.paid || !policy.active}
+                disabled={busy !== null || policy.paid || !policy.active || policy.assessed}
                 onClick={() => act("assess_claim")}
+                title={policy.assessed ? "Already assessed — result below" : "Run on-chain AI assessment"}
               >
-                {busy === "assess_claim" ? "Assessing… (waiting for finality)" : "1 · Assess Claim On-Chain"}
+                {busy === "assess_claim"
+                  ? "Assessing… (waiting for finality)"
+                  : policy.assessed
+                    ? "1 · Already Assessed ✓"
+                    : "1 · Assess Claim On-Chain"}
               </button>
               <button
                 className="btn btn-ghost"
@@ -606,6 +620,12 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
           <strong>Transparent.</strong> Every action below is recorded as a tx with
           hash + explorer link. Keep your assessment hash — it is your official proof.
         </div>
+        {lastHash && (
+          <div className="card" style={{ marginTop: 16 }}>
+            <h3>What just happened — {lastLabel}</h3>
+            <TxConsensus hash={lastHash} network={network} />
+          </div>
+        )}
       </div>
     </div>
   );

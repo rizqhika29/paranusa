@@ -1,8 +1,11 @@
 "use client";
-// Session transaction history: stages, hash/explorer links, actionable errors.
+// Session transaction history: stages, hash/explorer links, actionable errors,
+// and expandable on-chain consensus proof per tx.
+import { useState } from "react";
 import { useApp } from "@/state/AppContext";
 import { NETWORKS } from "@/lib/config";
 import { formatTime, shortHash } from "@/lib/format";
+import TxConsensus from "@/components/TxConsensus";
 
 const STAGES = ["estimating", "submitted", "decided", "finalizing", "done"] as const;
 
@@ -14,6 +17,7 @@ function stageIndex(stage: string): number {
 export default function TxTracker() {
   const { txs, network } = useApp();
   const explorer = NETWORKS[network].explorerTx;
+  const [openId, setOpenId] = useState<number | null>(null);
 
   if (txs.length === 0) {
     return (
@@ -62,6 +66,21 @@ export default function TxTracker() {
               ))}
             </div>
             {t.error && <div className="tx-err">{t.error}</div>}
+            {t.hash && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setOpenId(openId === t.id ? null : t.id)}
+                >
+                  {openId === t.id ? "Hide consensus proof" : "Show consensus proof"}
+                </button>
+                {openId === t.id && (
+                  <div style={{ marginTop: 10 }}>
+                    <TxConsensus hash={t.hash} network={t.network} />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         );
       })}
