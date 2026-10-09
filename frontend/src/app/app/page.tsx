@@ -23,6 +23,7 @@ import {
   type TxStage,
 } from "@/lib/genlayer";
 import { classifyWriteError, genToWei, shortAddress, shortHash, weiToGen } from "@/lib/format";
+import { fetchPolicyProofTxs } from "@/lib/explorer";
 import { SectionHeading } from "@/components/ui";
 import TxTracker from "@/components/TxTracker";
 import TxConsensus from "@/components/TxConsensus";
@@ -577,7 +578,7 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
                 <div className="evidence">{policy.evidence}</div>
               </div>
             )}
-            <PolicyProofs policyId={qid.trim()} txs={txs} network={network} />
+            <PolicyProofs policyId={qid.trim()} assessed={policy.assessed} txs={txs} network={network} contract={contract} />
           </>
         )}
       </div>
@@ -639,16 +640,52 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
    claim transactions bound to the policy ID (persisted across reloads). */
 function PolicyProofs({
   policyId,
+  assessed,
   txs,
   network,
+  contract,
 }: {
   policyId: string;
+  assessed: boolean;
   txs: ReturnType<typeof useApp>["txs"];
   network: NetworkKey;
+  contract: string;
 }) {
   const [open, setOpen] = useState(false);
   const [manual, setManual] = useState("");
   const [attached, setAttached] = useState<string[]>([]);
+  const [chain, setChain] = useState<{ hash: string; label: string }[]>([]);
+  const [chainLoading, setChainLoading] = useState(false);
+  const [chainErr, setChainErr] = useState("");
+
+  // On-chain proof: ask the explorer index which assess/claim txs touched
+  // THIS policy. Works on any device — no browser storage involved.
+  useEffect(() => {
+    let cancelled = false;
+    setChain([]);
+    setChainErr("");
+    if (!assessed || !policyId) return;
+    setChainLoading(true);
+    fetchPolicyProofTxs(network, contract, policyId)
+      .then((list) => {
+        if (cancelled) return;
+        setChain(
+          list.map((t) => ({
+            hash: t.hash,
+            label: `${t.method === "assess_claim" ? "Assess claim" : "Claim payout"} ${policyId}`,
+          }))
+        );
+      })
+      .catch((e) => {
+        if (!cancelled) setChainErr(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setChainLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assessed, policyId, network, contract]);
   // Primary: txs explicitly bound to this policy. Fallback: parse the
   // "<Action> <POLICY_ID>" label format of txs tracked before binding existed.
   const related = txs.filter((t) => {
@@ -660,70 +697,84 @@ function PolicyProofs({
   const hashes: string[] = [
     ...new Set([...related.map((t) => t.hash as string), ...attached]),
   ];
-  if (hashes.length === 0) {
-    return (
-      <div style={{ marginTop: 12 }}>
-        <div className="muted" style={{ marginBottom: 6, fontWeight: 700 }}>AI consensus proof</div>
-        <p className="muted" style={{ margin: "0 0 8px" }}>
-          No assessment tx bound to this policy in this browser (assessed in
-          another session or before proof tracking). Paste its hash to inspect
-          the validator votes and verdict:
-        </p>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            className="input"
-            value={manual}
-            onChange={(e) => setManual(e.target.value)}
-            placeholder="0x…"
-            spellCheck={false}
-          />
-          <button
-            className="btn btn-ghost btn-sm"
-            disabled={!/^0x[0-9a-fA-F]{64}$/.test(manual.trim())}
-            onClick={() => {
-              setAttached((prev) => [manual.trim(), ...prev].slice(0, 3));
-              setManual("");
-              setOpen(true);
-            }}
-          >
-            Inspect
-          </button>
-        </div>
-        {open && attached.length > 0 && (
-          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-            {attached.map((h) => (
-              <div key={h} className="card" style={{ padding: 16 }}>
-                <TxConsensus hash={h} network={network} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
+  // Merge: on-chain index first (works on any device), then local session
+  // txs, then manually attached hashes. Dedupe by hash.
+  const entries: { hash: string; label: string }[] = [];
+  const seen = new Set<string>();
+  const push = (hash: string, label: string) => {
+    if (hash && !seen.has(hash)) {
+      seen.add(hash);
+      entries.push({ hash, label });
+    }
+  };
+  for (const c of chain) push(c.hash, `${c.label} · on-chain`);
+  for (const t of related) push(t.hash as string, `${t.label} · this browser`);
+  for (const h of attached) push(h, "Manual hash");
   const latest = related[0];
+
+  const proofBody = (
+    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+      {entries.map((e) => (
+        <div key={e.hash} className="card" style={{ padding: 16 }}>
+          <div className="muted" style={{ fontWeight: 700, marginBottom: 6 }}>{e.label}</div>
+          <TxConsensus hash={e.hash} network={network} />
+        </div>
+      ))}
+      {latest && latest.ok === false && (
+        <p className="muted" style={{ margin: 0 }}>
+          Latest action did not finalize — check its error in the tracker below.
+        </p>
+      )}
+    </div>
+  );
+
   return (
     <div style={{ marginTop: 12 }}>
-      <button className="btn btn-ghost btn-sm" onClick={() => setOpen(!open)}>
-        {open ? "Hide" : "Show"} AI consensus proof ({hashes.length} tx{hashes.length > 1 ? "s" : ""})
-      </button>
-      {open && (
-        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
-          {hashes.map((h) => {
-            const t = related.find((x) => x.hash === h);
-            return (
-              <div key={h} className="card" style={{ padding: 16 }}>
-                {t && <div className="muted" style={{ fontWeight: 700, marginBottom: 6 }}>{t.label}</div>}
-                <TxConsensus hash={h} network={network} />
-              </div>
-            );
-          })}
-          {latest && latest.ok === false && (
-            <p className="muted" style={{ margin: 0 }}>
-              Latest action did not finalize — check its error in the tracker below.
+      <div className="muted" style={{ marginBottom: 6, fontWeight: 700 }}>AI consensus proof</div>
+      {chainLoading && entries.length === 0 && attached.length === 0 && (
+        <p className="muted" style={{ margin: "0 0 8px" }}>Searching on-chain assessment txs…</p>
+      )}
+      {chainErr && entries.length === 0 && (
+        <p className="muted" style={{ margin: "0 0 8px" }}>
+          On-chain index unreachable ({chainErr}). Showing browser-tracked txs only.
+        </p>
+      )}
+      {entries.length > 0 ? (
+        <>
+          <button className="btn btn-ghost btn-sm" onClick={() => setOpen(!open)}>
+            {open ? "Hide" : "Show"} AI consensus proof ({entries.length} tx{entries.length > 1 ? "s" : ""})
+          </button>
+          {open && proofBody}
+        </>
+      ) : (
+        !chainLoading && (
+          <>
+            <p className="muted" style={{ margin: "0 0 8px" }}>
+              No assessment tx found for this policy yet. If it was assessed in
+              another session, paste the tx hash to inspect the validator votes:
             </p>
-          )}
-        </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                className="input"
+                value={manual}
+                onChange={(e) => setManual(e.target.value)}
+                placeholder="0x…"
+                spellCheck={false}
+              />
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={!/^0x[0-9a-fA-F]{64}$/.test(manual.trim())}
+                onClick={() => {
+                  setAttached((prev) => [manual.trim(), ...prev].slice(0, 3));
+                  setManual("");
+                  setOpen(true);
+                }}
+              >
+                Inspect
+              </button>
+            </div>
+          </>
+        )
       )}
     </div>
   );
