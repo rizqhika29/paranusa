@@ -220,7 +220,8 @@
       so nondet closures are storage-class-free and `self`-free.
 - [ ] NO redeploy for now (zero behavior change). Batch with the next
       functional redeploy. Live contract `0x2219...b223C` stays valid.
-      (Superseded by session 15: redeployed `0x5FcD...0D743`.)
+      (Superseded by session 15: redeployed `0x5FcD...0D743`,
+      then session 16: `0x4Df6...5318a` current.)
 
 ## 3. Architecture (MVP)
 
