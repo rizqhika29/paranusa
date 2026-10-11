@@ -2,6 +2,7 @@
 from genlayer import *
 import json
 from dataclasses import dataclass
+import datetime
 
 # ParaNusa - Parametric Disaster Insurance for the Archipelago (GenLayer).
 # Trigger: drought | flood | earthquake. Data: Open-Meteo + USGS.
@@ -12,6 +13,18 @@ ERROR_EXTERNAL = "[EXTERNAL]"
 ERROR_TRANSIENT = "[TRANSIENT]"
 
 ALLOWED_DISASTERS = ("drought", "flood", "earthquake")
+
+# Underwriting: premium must be >= 1% of payout (in basis points of 10000).
+MIN_PREMIUM_BPS = 100
+
+# Coverage window bounds (days) settable by the insurer at approval.
+MIN_COVER_DAYS = 7
+MAX_COVER_DAYS = 365
+
+
+def _now_ts() -> int:
+    # Deterministic tx timestamp (same for all validators).
+    return int(datetime.datetime.now(datetime.timezone.utc).timestamp())
 
 
 def _parse_threshold(raw: str) -> float:
@@ -115,6 +128,11 @@ class Policy:
     # tx hash (not exposed in gl.message), so explicit linking is the pattern.
     # Appended LAST - storage layout is positional, never insert above.
     assess_tx: str
+    # Underwriting (set once by the insurer at approval, then immutable):
+    # approved flips False->True exactly once; coverage window is fixed.
+    approved: bool
+    start_ts: u256
+    end_ts: u256
 
 
 class ParaNusa(gl.Contract):
@@ -173,9 +191,15 @@ class ParaNusa(gl.Contract):
         if payout_amount == u256(0):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} payout must be > 0")
 
-        premium = gl.message.value  # may be 0 for demo, >0 in production
+        premium = gl.message.value
+        # Underwriting floor: premium must price at least MIN_PREMIUM_BPS of
+        # the payout. Zero-premium self-issue is rejected contract-side.
+        if premium * u256(10000) < payout_amount * u256(MIN_PREMIUM_BPS):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Premium below 1% of payout")
         holder = gl.message.sender_address
 
+        # Request only: NOT active, NOT approved, NOT locked. The insurer
+        # activates (with solvency check + immutable window) via approve_policy.
         self.policies[policy_id] = Policy(
             holder,
             lat,
@@ -185,17 +209,43 @@ class ParaNusa(gl.Contract):
             threshold,
             premium,
             payout_amount,
-            True,
             False,
             False,
+            False,
             "",
             "",
             False,
             "",
+            False,
+            u256(0),
+            u256(0),
         )
         self.policy_count = self.policy_count + u256(1)
         self.total_premiums = self.total_premiums + premium
-        self.total_locked = self.total_locked + payout_amount
+
+    @gl.public.write
+    def approve_policy(self, policy_id: str, duration_days: u256) -> None:
+        # Insurer underwriting: activates a requested policy with an immutable
+        # coverage window. Solvency enforced: the pool must cover ALL locked
+        # payouts including this one, otherwise the policy stays pending.
+        if gl.message.sender_address != self.owner:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Only insurer can approve")
+        pol = self._require_policy(policy_id)
+        if pol.approved:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Already approved")
+        if pol.paid:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Already paid")
+        duration_days = _as_u256(duration_days, "duration")
+        if duration_days < u256(MIN_COVER_DAYS) or duration_days > u256(MAX_COVER_DAYS):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Cover must be 7-365 days")
+        if self.balance < self.total_locked + pol.payout_amount:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Pool insolvent for this payout")
+        now = u256(_now_ts())
+        self.policies[policy_id].approved = True
+        self.policies[policy_id].active = True
+        self.policies[policy_id].start_ts = now
+        self.policies[policy_id].end_ts = now + duration_days * u256(86400)
+        self.total_locked = self.total_locked + pol.payout_amount
 
     @gl.public.write
     def withdraw_surplus(self, amount: u256) -> None:
@@ -220,10 +270,16 @@ class ParaNusa(gl.Contract):
     @gl.public.write
     def assess_claim(self, policy_id: str) -> None:
         pol_mem = gl.storage.copy_to_memory(self._require_policy(policy_id))
+        if not pol_mem.approved:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Policy not approved by insurer")
         if not pol_mem.active:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Policy not active")
         if pol_mem.paid:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Already paid")
+        if pol_mem.assessed:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Already assessed (one-time)")
+        if u256(_now_ts()) > pol_mem.end_ts:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Coverage window expired")
 
         if pol_mem.disaster_type == "drought":
             result = self._assess_drought(pol_mem)
@@ -481,6 +537,8 @@ class ParaNusa(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Only holder or owner can claim")
         if pol.paid:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Already paid")
+        if not pol.approved:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Policy not approved by insurer")
         if not pol.active:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Policy not active")
         if not pol.assessed:
@@ -529,6 +587,9 @@ class ParaNusa(gl.Contract):
             "evidence": pol.evidence,
             "paid": pol.paid,
             "assess_tx": pol.assess_tx,
+            "approved": pol.approved,
+            "start_ts": int(pol.start_ts),
+            "end_ts": int(pol.end_ts),
         }
 
     @gl.public.view

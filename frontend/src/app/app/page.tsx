@@ -12,6 +12,7 @@ import {
 } from "@/lib/config";
 import {
   policyStatusLabel,
+  formatWindow,
   readOnlyClient,
   readPolicy,
   readPreviewUrl,
@@ -303,8 +304,8 @@ function CreateForm({ onDone }: { onDone: () => void }) {
         args: [pid, lat.trim(), lon.trim(), location.trim(), disaster, threshold.trim(), payoutWei],
         value: premiumWei,
       },
-      successTitle: "Policy issued",
-      successMessage: `Policy ${pid} is active. Save its ID for tracking.`,
+      successTitle: "Policy requested",
+      successMessage: `Policy ${pid} requested. It needs insurer approval (solvency-checked, 7–365 day window) before assessment.`,
       onDone,
     });
     if (hash) app.rememberPolicy(pid, app.wallet ?? "");
@@ -368,9 +369,9 @@ function CreateForm({ onDone }: { onDone: () => void }) {
             <input className="input" value={payout} onChange={(e) => setPayout(e.target.value)} inputMode="decimal" />
           </div>
           <div className="field">
-            <label>Premium (GEN)</label>
+            <label>Premium (GEN) — min 1% of payout</label>
             <input className="input" value={premium} onChange={(e) => setPremium(e.target.value)} inputMode="decimal" />
-            <span className="hint">Sent as transaction value.</span>
+            <span className="hint">Sent as transaction value. Underpriced requests are rejected on-chain.</span>
           </div>
         </div>
         {formErr && <div className="alert alert-err" style={{ marginBottom: 12 }}>{formErr}</div>}
@@ -433,6 +434,7 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [lookupErr, setLookupErr] = useState("");
+  const [approveDays, setApproveDays] = useState("30");
   const [lastHash, setLastHash] = useState<string | null>(null);
   const [lastLabel, setLastLabel] = useState("");
 
@@ -468,7 +470,7 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialId]);
 
-  async function act(kind: "assess_claim" | "claim_payout" | "cancel_policy", confirmMsg?: string) {
+  async function act(kind: "assess_claim" | "claim_payout" | "cancel_policy" | "approve_policy", confirmMsg?: string, extraArgs: unknown[] = []) {
     if (!policy) return;
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     if (!app.wallet) {
@@ -477,19 +479,21 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
     }
     const pid = qid.trim();
     setBusy(kind);
-    const actionLabel = kind === "assess_claim" ? "Assess claim" : kind === "claim_payout" ? "Claim payout" : "Cancel policy";
+    const actionLabel = kind === "assess_claim" ? "Assess claim" : kind === "claim_payout" ? "Claim payout" : kind === "approve_policy" ? "Approve policy" : "Cancel policy";
     const hash = await runWrite({
       app,
       label: `${actionLabel} ${pid}`,
       policyId: pid,
-      call: { functionName: kind, args: [pid] },
-      successTitle: kind === "claim_payout" ? "Payout sent" : kind === "assess_claim" ? "Assessment finalized" : "Policy cancelled",
+      call: { functionName: kind, args: [pid, ...extraArgs] },
+      successTitle: kind === "claim_payout" ? "Payout sent" : kind === "assess_claim" ? "Assessment finalized" : kind === "approve_policy" ? "Policy approved" : "Policy cancelled",
       successMessage:
         kind === "claim_payout"
           ? "GEN has been transferred to the holder."
           : kind === "assess_claim"
             ? "Consensus result stored. Re-read the policy to see the trigger."
-            : "The policy is now inactive.",
+            : kind === "approve_policy"
+              ? "Insurer approved: coverage window locked, payout reserved."
+              : "The policy is now inactive.",
       onStarted:
         kind === "assess_claim"
           ? () =>
@@ -575,6 +579,10 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
             <div className="kv"><span className="k">Threshold</span><span className="v">{policy.threshold}</span></div>
             <div className="kv"><span className="k">Premium</span><span className="v">{weiToGen(policy.premium)} GEN</span></div>
             <div className="kv"><span className="k">Payout</span><span className="v">{weiToGen(policy.payout_amount)} GEN</span></div>
+            <div className="kv"><span className="k">Underwriting</span><span className="v">{policy.approved ? "approved by insurer" : "pending approval"}</span></div>
+            {policy.approved && (
+              <div className="kv"><span className="k">Coverage window</span><span className="v">{formatWindow(policy.start_ts, policy.end_ts)}</span></div>
+            )}
             {policy.assessed && (
               <>
                 <div className="kv"><span className="k">Measured</span><span className="v">{policy.measured_value || "—"}</span></div>
@@ -607,11 +615,39 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
           {!policy && <p className="muted" style={{ margin: 0 }}>Find a policy first to unlock actions.</p>}
           {policy && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {!policy.approved && (
+                <>
+                  <div className="field" style={{ marginBottom: 0 }}>
+                    <label>Coverage window (days, 7–365)</label>
+                    <input
+                      className="input"
+                      value={approveDays}
+                      onChange={(e) => setApproveDays(e.target.value)}
+                      inputMode="numeric"
+                    />
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    disabled={busy !== null || policy.paid}
+                    onClick={() => {
+                      const d = Number(approveDays);
+                      if (!Number.isInteger(d) || d < 7 || d > 365) {
+                        pushToast({ tone: "error", title: "Invalid window", message: "Cover must be 7–365 days." });
+                        return;
+                      }
+                      act("approve_policy", `Approve ${qid.trim()} for ${d} days?`, [d]);
+                    }}
+                    title="Insurer only — contract enforces"
+                  >
+                    {busy === "approve_policy" ? "Approving…" : "0 · Approve & Activate (insurer)"}
+                  </button>
+                </>
+              )}
               <button
                 className="btn btn-primary"
-                disabled={busy !== null || policy.paid || !policy.active || policy.assessed}
+                disabled={busy !== null || policy.paid || !policy.active || !policy.approved || policy.assessed}
                 onClick={() => act("assess_claim")}
-                title={policy.assessed ? "Already assessed — result below" : "Run on-chain AI assessment"}
+                title={policy.assessed ? "Already assessed — result below" : !policy.approved ? "Needs insurer approval first" : "Run on-chain AI assessment"}
               >
                 {busy === "assess_claim"
                   ? "Assessing… (waiting for finality)"
@@ -634,8 +670,9 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
                 {busy === "cancel_policy" ? "Cancelling…" : "Cancel Policy"}
               </button>
               <p className="muted" style={{ margin: 0 }}>
-                Payout is enabled only when the policy is <em>assessed</em> and the
-                trigger is met. Only the holder or the contract owner can execute.
+                New policies need insurer approval first (solvency-checked, fixed
+                7–365 day window). Assessment runs once, inside the window. Payout
+                needs an assessed, met trigger. Holder or owner only.
               </p>
             </div>
           )}

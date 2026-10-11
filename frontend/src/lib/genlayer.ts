@@ -52,6 +52,9 @@ export interface PolicyView {
   evidence: string;
   paid: boolean;
   assess_tx: string;
+  approved: boolean;
+  start_ts: string;
+  end_ts: string;
 }
 
 export interface PoolStats {
@@ -90,6 +93,9 @@ export async function readPolicy(
     evidence: String(r.evidence ?? r[12] ?? ""),
     paid: Boolean(r.paid ?? r[13] ?? false),
     assess_tx: String(r.assess_tx ?? r[14] ?? ""),
+    approved: Boolean(r.approved ?? r[15] ?? false),
+    start_ts: String(r.start_ts ?? r[16] ?? "0"),
+    end_ts: String(r.end_ts ?? r[17] ?? "0"),
   };
 }
 
@@ -225,10 +231,23 @@ export async function writeWithLifecycle(
 
 export function policyStatusLabel(p: PolicyView): { text: string; tone: string } {
   if (p.paid) return { text: "Payout sent", tone: "paid" };
+  if (!p.approved) return { text: "Pending insurer approval", tone: "idle" };
   if (p.assessed && p.trigger_met) return { text: "Trigger met — ready to claim", tone: "claimable" };
   if (p.assessed && !p.trigger_met) return { text: "Trigger not met", tone: "idle" };
   if (!p.active) return { text: "Inactive", tone: "idle" };
   return { text: "Active — not assessed", tone: "active" };
+}
+
+export function formatWindow(startTs: string, endTs: string): string {
+  try {
+    const s = Number(startTs), e = Number(endTs);
+    if (!s || !e) return "—";
+    const f = (t: number) =>
+      new Date(t * 1000).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+    return `${f(s)} → ${f(e)}`;
+  } catch {
+    return "—";
+  }
 }
 
 /** Data-source URL the contract will fetch for this policy (transparency). */

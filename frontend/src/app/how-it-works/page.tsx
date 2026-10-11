@@ -15,8 +15,9 @@ export default function HowItWorks() {
           <h3>1 · Policy lifecycle</h3>
           <div className="code">
             fund_pool() [payable, insurer]{"\n"}
-            → create_policy(id, lat, lon, location, disaster, threshold, payout) [payable, premium]{"\n"}
-            → assess_claim(id) [non-deterministic: web + LLM + consensus]{"\n"}
+            → create_policy(id, lat, lon, location, disaster, threshold, payout) [payable premium ≥1%, request only]{"\n"}
+            → approve_policy(id, days) [insurer only: solvency check + immutable 7–365d window]{"\n"}
+            → assess_claim(id) [non-deterministic, one-time, in-window]{"\n"}
             → claim_payout(id) [GEN transfer to holder if trigger_met]{"\n"}
             → cancel_policy(id) [owner / holder, before payout]{"\n"}
             → withdraw_surplus(amount) [owner only, surplus above locked payouts]

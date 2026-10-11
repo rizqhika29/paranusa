@@ -3,7 +3,7 @@
 > **Drought, flood, and earthquake coverage that pays automatically from real-world data — no adjusters, no interpretation disputes, no centralized oracles.**
 
 [![GenLayer](https://img.shields.io/badge/GenLayer-Studionet-F5A524)](https://studio.genlayer.com/)
-[![Contract](https://img.shields.io/badge/contract-0x2219...b223C-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0x221940AdE201E4Dd34823156c3A88b55c08b223C)
+[![Contract](https://img.shields.io/badge/contract-0x5FcD...0D743-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743)
 [![Tests](https://img.shields.io/badge/direct--tests-38%20passed-34D399)](#-testing)
 [![Frontend](https://img.shields.io/badge/frontend-Next.js_15-black)](./frontend)
 
@@ -23,7 +23,7 @@ No claim forms. No "under review". Data says yes → money moves.
 
 | | |
 |---|---|
-| **Contract** | [`0x221940AdE201E4Dd34823156c3A88b55c08b223C`](https://explorer-studio.genlayer.com/contracts/0x221940AdE201E4Dd34823156c3A88b55c08b223C) |
+| **Contract** | [`0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743`](https://explorer-studio.genlayer.com/contracts/0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743) |
 | **Network** | GenLayer Studionet (chain `61999`) |
 | **Frontend** | [`/app`](./frontend) — auto-connected via `.env.production` |
 
@@ -55,9 +55,11 @@ natively**, then force AI validators to verify each other before state changes.
 
 ```
 fund_pool()                        — insurer locks GEN as payout reserve
-  → create_policy(...)             — policy issued, premium in, payout LOCKED
-  → assess_claim(policy_id)         — API fetch + LLM + validator consensus
-  → claim_payout(policy_id)        — GEN flows to holder if trigger_met
+  → create_policy(...)             — request (premium ≥1% of payout, else revert)
+  → approve_policy(id, days)       — insurer only: solvency check + immutable window
+  → assess_claim(id)               — one-time, inside window, web + LLM + consensus
+  → link_proof(id, tx_hash)        — bind assessment proof on-chain
+  → claim_payout(id)               — GEN flows to holder if trigger_met
 ```
 
 ### Inside `assess_claim` — 4 stages
@@ -118,9 +120,10 @@ paramatic-insurance/
 └── requirements.txt
 ```
 
-**Contract methods:** `fund_pool` · `create_policy` · `assess_claim` ·
-`link_proof` (binds the assessment tx hash on-chain) ·
-`claim_payout` · `cancel_policy` · `withdraw_surplus` (owner) ·
+**Contract methods:** `fund_pool` · `create_policy` (request, min 1% premium) ·
+`approve_policy` (insurer: solvency + immutable 7–365d window) ·
+`assess_claim` (one-time, in-window) · `link_proof` (binds the assessment tx
+hash on-chain) · `claim_payout` · `cancel_policy` · `withdraw_surplus` (owner) ·
 `get_policy` · `get_stats` · `preview_url`.
 
 **Frontend:** landing + `/how-it-works` + `/app` (pool, create policy, track &

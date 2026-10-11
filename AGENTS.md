@@ -162,8 +162,7 @@
 - [x] Updated `.env.local`/`.env.production`, both READMEs, session 9 record.
 - [ ] Push + Vercel redeploy (env changed).
 
-### 2026-10-09 — Session 14: On-chain proof binding (link_proof) ✅
-- [x] Docs confirm: NO tx hash / block / nonce exposed to contracts
+### 2026-10-09 — Session 14: On-chain proof binding (link_proof) ✅- [x] Docs confirm: NO tx hash / block / nonce exposed to contracts
       (transaction-context page). Explicit link tx is the canonical pattern.
 - [x] Contract: `assess_tx: str` appended LAST to Policy (layout-safe) +
       `link_proof(policy_id, tx_hash)` (holder/owner, requires assessed,
@@ -176,6 +175,20 @@
 - [x] Redeployed `0x2219...b223C`. Verified live: fund, create DRO-LINK,
       assess (53.0mm False), link_proof, `assess_tx` readable on-chain.
 - [x] Updated envs + docs. Old `0xc683...` had one test policy, no funds locked.
+
+### 2026-10-09 — Session 15: Resubmission underwriting (staff rejection fix) ✅
+- [x] Rejection: zero-premium self-issue + arbitrary pricing + no approval/window.
+- [x] Contract v2 (methods:11): create = request only (min 1% premium floor),
+      `approve_policy` (owner, solvency `balance >= locked + payout`, immutable
+      7–365d window from deterministic tx time), assess one-time + in-window,
+      claim requires approval. `approved/start_ts/end_ts` appended to Policy.
+- [x] `pytest tests/direct/`: **50 passed** (incl. `warp()` expiry test,
+      insolvent-approve, double-approve, double-assess, unapproved paths).
+- [x] Frontend: approve button + duration (insurer), window display, pending
+      status, premium-floor hint; how-it-works lifecycle updated.
+- [x] Redeployed `0x5FcD...0D743`. Verified live: fund, request UW-1,
+      approve (30d window set), assess MAJORITY_AGREE (46.3mm False).
+- [x] Updated envs + docs. Ready to resubmit.
 
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
       in validator stderr. Cause: nondet closures capturing `self` (via
@@ -193,8 +206,9 @@
 
 ```
 fund_pool() [payable] — insurer funds GEN liquidity
-  -> create_policy(policy_id, lat, lon, location_name, disaster_type, threshold, payout) [payable]
-  -> assess_claim(policy_id) [NONDET]
+  -> create_policy(policy_id, lat, lon, location_name, disaster_type, threshold, payout) [payable, min 1% premium, request only]
+  -> approve_policy(policy_id, days) [owner: solvency + immutable 7-365d window]
+  -> assess_claim(policy_id) [NONDET, one-time, in-window]
   -> link_proof(policy_id, tx_hash) [holder/owner binds assess tx on-chain]
   -> claim_payout(policy_id) [transfer GEN to holder]
   -> cancel_policy / get_policy / get_stats / preview_url
