@@ -91,6 +91,7 @@ export default function AppDashboard() {
           <PoolNumber label="Locked for Active Policies" value={stats ? `${weiToGen(stats.total_locked)} GEN` : "—"} loading={statsLoading} />
           <PoolNumber label="Total Premiums In" value={stats ? `${weiToGen(stats.total_premiums)} GEN` : "—"} loading={statsLoading} />
           <PoolNumber label="Total Payouts Out" value={stats ? `${weiToGen(stats.total_payouts)} GEN` : "—"} loading={statsLoading} />
+          <PoolNumber label="Premiums Refunded" value={stats ? `${weiToGen(stats.total_refunds)} GEN` : "—"} loading={statsLoading} />
         </div>
         <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
           <button className="btn btn-ghost btn-sm" onClick={refreshStats} disabled={!ready || statsLoading}>
@@ -470,7 +471,7 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialId]);
 
-  async function act(kind: "assess_claim" | "claim_payout" | "cancel_policy" | "approve_policy", confirmMsg?: string, extraArgs: unknown[] = []) {
+  async function act(kind: "assess_claim" | "claim_payout" | "cancel_policy" | "approve_policy" | "reject_policy" | "expire_policy", confirmMsg?: string, extraArgs: unknown[] = []) {
     if (!policy) return;
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     if (!app.wallet) {
@@ -479,13 +480,13 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
     }
     const pid = qid.trim();
     setBusy(kind);
-    const actionLabel = kind === "assess_claim" ? "Assess claim" : kind === "claim_payout" ? "Claim payout" : kind === "approve_policy" ? "Approve policy" : "Cancel policy";
+    const actionLabel = kind === "assess_claim" ? "Assess claim" : kind === "claim_payout" ? "Claim payout" : kind === "approve_policy" ? "Approve policy" : kind === "reject_policy" ? "Reject policy" : kind === "expire_policy" ? "Expire policy" : "Cancel policy";
     const hash = await runWrite({
       app,
       label: `${actionLabel} ${pid}`,
       policyId: pid,
       call: { functionName: kind, args: [pid, ...extraArgs] },
-      successTitle: kind === "claim_payout" ? "Payout sent" : kind === "assess_claim" ? "Assessment finalized" : kind === "approve_policy" ? "Policy approved" : "Policy cancelled",
+      successTitle: kind === "claim_payout" ? "Payout sent" : kind === "assess_claim" ? "Assessment finalized" : kind === "approve_policy" ? "Policy approved" : kind === "reject_policy" ? "Policy rejected" : kind === "expire_policy" ? "Policy expired" : "Policy cancelled",
       successMessage:
         kind === "claim_payout"
           ? "GEN has been transferred to the holder."
@@ -493,7 +494,11 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
             ? "Consensus result stored. Re-read the policy to see the trigger."
             : kind === "approve_policy"
               ? "Insurer approved: coverage window locked, payout reserved."
-              : "The policy is now inactive.",
+              : kind === "reject_policy"
+                ? "Request declined; premium refunded to the holder."
+                : kind === "expire_policy"
+                  ? "Window closed; unused reserves released, premium refunded if unassessed."
+                  : "The policy is now inactive.",
       onStarted:
         kind === "assess_claim"
           ? () =>
@@ -580,6 +585,9 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
             <div className="kv"><span className="k">Premium</span><span className="v">{weiToGen(policy.premium)} GEN</span></div>
             <div className="kv"><span className="k">Payout</span><span className="v">{weiToGen(policy.payout_amount)} GEN</span></div>
             <div className="kv"><span className="k">Underwriting</span><span className="v">{policy.approved ? "approved by insurer" : "pending approval"}</span></div>
+            {policy.refunded && (
+              <div className="kv"><span className="k">Premium</span><span className="v">refunded</span></div>
+            )}
             {policy.approved && (
               <div className="kv"><span className="k">Coverage window</span><span className="v">{formatWindow(policy.start_ts, policy.end_ts)}</span></div>
             )}
@@ -667,8 +675,26 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
                 disabled={busy !== null || policy.paid || !policy.active}
                 onClick={() => act("cancel_policy", `Cancel policy ${qid.trim()}?`)}
               >
-                {busy === "cancel_policy" ? "Cancelling…" : "Cancel Policy"}
+                {busy === "cancel_policy" ? "Cancelling…" : "Cancel Policy (holder)"}
               </button>
+              {!policy.approved && !policy.paid && (
+                <button
+                  className="btn btn-ghost"
+                  disabled={busy !== null}
+                  onClick={() => act("reject_policy", `Reject ${qid.trim()} and refund its premium?`)}
+                >
+                  {busy === "reject_policy" ? "Rejecting…" : "Reject Request (insurer)"}
+                </button>
+              )}
+              {policy.approved && !policy.paid && (
+                <button
+                  className="btn btn-ghost"
+                  disabled={busy !== null}
+                  onClick={() => act("expire_policy")}
+                >
+                  {busy === "expire_policy" ? "Expiring…" : "Expire After Window"}
+                </button>
+              )}
               <p className="muted" style={{ margin: 0 }}>
                 New policies need insurer approval first (solvency-checked, fixed
                 7–365 day window). Assessment runs once, inside the window. Payout

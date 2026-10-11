@@ -12,8 +12,8 @@ npm run dev                  # http://localhost:3000
 
 ## Live contract (Studionet)
 
-- **ParaNusa:** `0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743`
-  ([explorer](https://explorer-studio.genlayer.com/contracts/0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743))
+- **ParaNusa:** `0x4Df6BCEBd759477d57678773Fc1F2A8e555D318a`
+  ([explorer](https://explorer-studio.genlayer.com/contracts/0x4Df6BCEBd759477d57678773Fc1F2A8e555D318a))
 - Wired by default via `.env.local` (`NEXT_PUBLIC_CONTRACT_STUDIONET`).
   Override per-session in the App settings (persisted in localStorage).
 

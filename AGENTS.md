@@ -176,8 +176,7 @@
       assess (53.0mm False), link_proof, `assess_tx` readable on-chain.
 - [x] Updated envs + docs. Old `0xc683...` had one test policy, no funds locked.
 
-### 2026-10-09 — Session 15: Resubmission underwriting (staff rejection fix) ✅
-- [x] Rejection: zero-premium self-issue + arbitrary pricing + no approval/window.
+### 2026-10-09 — Session 15: Resubmission underwriting (staff rejection fix) ✅- [x] Rejection: zero-premium self-issue + arbitrary pricing + no approval/window.
 - [x] Contract v2 (methods:11): create = request only (min 1% premium floor),
       `approve_policy` (owner, solvency `balance >= locked + payout`, immutable
       7–365d window from deterministic tx time), assess one-time + in-window,
@@ -189,6 +188,26 @@
 - [x] Redeployed `0x5FcD...0D743`. Verified live: fund, request UW-1,
       approve (30d window set), assess MAJORITY_AGREE (46.3mm False).
 - [x] Updated envs + docs. Ready to resubmit.
+
+### 2026-10-10 — Session 16: Steward settlement review (2nd rejection fix) ✅
+- [x] Contract: USGS starttime/endtime = coverage window (server-side exclusion),
+      Open-Meteo date-filtered to [start, min(today,end)] + sparse-data guard
+      (drought 10d / flood 3d), measurement ALWAYS programmatic (LLM numbers
+      ignored structurally), claim requires linked proof, cancel holder-only +
+      never payable claims, owner cancel of active removed, reject (pending +
+      refund), expire (post-window recovery, payable survive), total_refunds.
+- [x] `pytest tests/direct/`: **60 passed** (warp-managed windows, URL-param
+      plumbing, pre-coverage exclusion, min-overlap, guards, refunds, expiry).
+- [x] Frontend: reject/expire buttons, refunded row + Refunded stat, approve flow.
+- [x] Redeployed `0x4Df6...5318a`. Live E2E: fund, 4 requests + 3 approves,
+      holder-owned policy + owner-cancel revert (agreed), holder cancel+refund,
+      owner reject+refund, quake assess 0.0 (historic M6.5 excluded by window!),
+      fresh-drought assess revert (sparse guard, agreed), double-assess revert
+      (agreed), withdraw. Conservation holds (pool 4.65, locked 1.5).
+- [x] Live limits (documented for stewards): full drought payout needs a 10-day
+      old window (warp-covered in direct tests); expiry needs past-end windows
+      (warp-covered); payout-on-new-revision pending a MET event.
+- [x] Updated envs + docs. Resubmit with full E2E matrix.
 
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
       in validator stderr. Cause: nondet closures capturing `self` (via

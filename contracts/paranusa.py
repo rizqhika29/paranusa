@@ -21,10 +21,20 @@ MIN_PREMIUM_BPS = 100
 MIN_COVER_DAYS = 7
 MAX_COVER_DAYS = 365
 
+# Sparse-data guard: minimum in-window daily observations, else assessment
+# is rejected instead of triggering on ~nothing.
+DROUGHT_MIN_DAYS = 10
+FLOOD_MIN_DAYS = 3
+
 
 def _now_ts() -> int:
     # Deterministic tx timestamp (same for all validators).
     return int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+
+
+def _day_str(ts: int) -> str:
+    # YYYY-MM-DD UTC. ISO dates compare lexicographically.
+    return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
 def _parse_threshold(raw: str) -> float:
@@ -133,6 +143,8 @@ class Policy:
     approved: bool
     start_ts: u256
     end_ts: u256
+    # Premium refund bookkeeping (reject/cancel/expire, once each at most).
+    refunded: bool
 
 
 class ParaNusa(gl.Contract):
@@ -141,6 +153,7 @@ class ParaNusa(gl.Contract):
     policies: TreeMap[str, Policy]
     total_premiums: u256
     total_payouts: u256
+    total_refunds: u256
     # Total payout of active policies (not paid/cancelled) - these funds are LOCKED,
     # cannot be withdrawn by owner via withdraw_surplus.
     total_locked: u256
@@ -150,6 +163,7 @@ class ParaNusa(gl.Contract):
         self.policy_count = u256(0)
         self.total_premiums = u256(0)
         self.total_payouts = u256(0)
+        self.total_refunds = u256(0)
         self.total_locked = u256(0)
 
     # ---------- helpers (deterministic, outside nondet) ----------
@@ -219,9 +233,21 @@ class ParaNusa(gl.Contract):
             False,
             u256(0),
             u256(0),
+            False,
         )
         self.policy_count = self.policy_count + u256(1)
         self.total_premiums = self.total_premiums + premium
+
+    def _refund_premium(self, policy_id: str) -> None:
+        # Returns the premium to the holder exactly once. Transfer itself is
+        # fire-and-forget on-chain; total_refunds keeps auditable accounting.
+        pol = self.policies[policy_id]
+        if pol.refunded:
+            return
+        self.policies[policy_id].refunded = True
+        if pol.premium > u256(0):
+            self.total_refunds = self.total_refunds + pol.premium
+            gl.get_contract_at(pol.holder).emit_transfer(value=pol.premium)
 
     @gl.public.write
     def approve_policy(self, policy_id: str, duration_days: u256) -> None:
@@ -295,12 +321,23 @@ class ParaNusa(gl.Contract):
         self.policies[policy_id].measured_value = str(result["measured_value"])
         self.policies[policy_id].evidence = result["evidence"][:2000]
 
+    def _window_days(self, pol) -> tuple:
+        # Coverage interval as ISO days, computed deterministically OUTSIDE
+        # nondet: [start_day, cap_day] where cap = min(today, end_day).
+        # Observations outside this interval MUST NOT influence the verdict.
+        start_day = _day_str(int(pol.start_ts))
+        end_day = _day_str(int(pol.end_ts))
+        today = _day_str(_now_ts())
+        cap_day = end_day if end_day < today else today
+        return (start_day, cap_day)
+
     def _assess_drought(self, pol) -> dict:
         # Extract primitives first: the nondet closure below MUST NOT
         # capture storage-class objects (triggers on-chain pickling warning).
         lat, lon = str(pol.lat), str(pol.lon)
         loc = str(pol.location_name)
         threshold = _parse_threshold(pol.threshold)
+        win_start, win_cap = self._window_days(pol)
         url = (
             "https://api.open-meteo.com/v1/forecast?latitude=" + lat
             + "&longitude=" + lon
@@ -318,35 +355,51 @@ class ParaNusa(gl.Contract):
                 raise gl.vm.UserError(f"{ERROR_EXTERNAL} Open-Meteo status {res.status}")
             try:
                 data = json.loads(res.body.decode("utf-8"))
-                daily = data.get("daily", {}).get("precipitation_sum", [])
-                total = float(sum(x for x in daily if isinstance(x, (int, float))))
+                daily = data.get("daily", {})
+                times = daily.get("time", [])
+                vals = daily.get("precipitation_sum", [])
+                if not isinstance(times, list) or not isinstance(vals, list):
+                    raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad Open-Meteo payload: missing time/values")
+                if len(times) != len(vals) or len(times) == 0:
+                    raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad Open-Meteo payload: bad series shape")
+                # ONLY in-coverage observations count. Pre-coverage rain and
+                # not-yet-occurred forecast days are excluded by date.
+                in_win = [
+                    float(v) for t, v in zip(times, vals)
+                    if isinstance(t, str) and win_start <= t <= win_cap
+                    and isinstance(v, (int, float))
+                ]
+                if len(in_win) < DROUGHT_MIN_DAYS:
+                    raise gl.vm.UserError(
+                        f"{ERROR_EXPECTED} Insufficient in-window observations "
+                        f"({len(in_win)} days)"
+                    )
+                total = float(sum(in_win))
+                ndays = len(in_win)
+            except gl.vm.UserError:
+                raise
             except Exception as e:
                 raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad Open-Meteo payload: {e}")
-            # Grounding: computed programmatically. Verdict is computed by the CONTRACT (deterministic),
-            # the LLM only writes evidence + reports the number. measured_value MUST be
-            # string ("5.0") because calldata does not support float.
+            # The measurement is ALWAYS the programmatically parsed API value.
+            # The LLM only writes the evidence sentence; its numbers are ignored,
+            # so a false LLM-restated number cannot change the trigger.
             prompt = (
-                "You are a parametric insurance oracle. Report ONLY the measured "
-                f"30-day rainfall total ({total} mm) for {loc} ({lat},{lon}). "
-                "You do NOT decide the payout. "
-                'Return JSON: {"measured_value": string like "5.0", "evidence": string}. '
-                "evidence = 1 sentence summary."
+                "You are a parametric insurance oracle. Write ONE sentence of "
+                f"evidence for a drought assessment: {total} mm rain over {ndays} "
+                f"observed days in coverage {win_start}..{win_cap} near {loc} ({lat},{lon}). "
+                "You do NOT decide anything. "
+                'Return JSON: {"evidence": string}.'
             )
             llm = gl.nondet.exec_prompt(prompt, response_format="json")
             if not isinstance(llm, dict):
                 llm = {}
-            measured_str = str(llm.get("measured_value", str(total)))
-            try:
-                measured_f = float(measured_str)
-            except Exception:
-                measured_f, measured_str = total, str(total)
             locality = _fetch_locality(lat, lon)
             evidence = str(llm.get("evidence", f"30d rainfall {total}mm vs threshold {threshold}mm"))
             if locality:
                 evidence = evidence + f" Locality: {locality}."
             return {
-                "trigger_met": _decide_trigger("drought", measured_f, threshold),
-                "measured_value": measured_str,
+                "trigger_met": _decide_trigger("drought", total, threshold),
+                "measured_value": str(total),
                 "evidence": evidence,
             }
 
@@ -374,6 +427,7 @@ class ParaNusa(gl.Contract):
         lat, lon = str(pol.lat), str(pol.lon)
         loc = str(pol.location_name)
         threshold = _parse_threshold(pol.threshold)
+        win_start, win_cap = self._window_days(pol)
         url = (
             "https://api.open-meteo.com/v1/forecast?latitude=" + lat
             + "&longitude=" + lon
@@ -391,32 +445,47 @@ class ParaNusa(gl.Contract):
                 raise gl.vm.UserError(f"{ERROR_EXTERNAL} Open-Meteo status {res.status}")
             try:
                 data = json.loads(res.body.decode("utf-8"))
-                daily = data.get("daily", {}).get("precipitation_sum", [])
-                total = float(sum(x for x in daily if isinstance(x, (int, float))))
+                daily = data.get("daily", {})
+                times = daily.get("time", [])
+                vals = daily.get("precipitation_sum", [])
+                if not isinstance(times, list) or not isinstance(vals, list):
+                    raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad Open-Meteo payload: missing time/values")
+                if len(times) != len(vals) or len(times) == 0:
+                    raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad Open-Meteo payload: bad series shape")
+                in_win = [
+                    float(v) for t, v in zip(times, vals)
+                    if isinstance(t, str) and win_start <= t <= win_cap
+                    and isinstance(v, (int, float))
+                ]
+                if len(in_win) < FLOOD_MIN_DAYS:
+                    raise gl.vm.UserError(
+                        f"{ERROR_EXPECTED} Insufficient in-window observations "
+                        f"({len(in_win)} days)"
+                    )
+                total = float(sum(in_win))
+                ndays = len(in_win)
+            except gl.vm.UserError:
+                raise
             except Exception as e:
                 raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad Open-Meteo payload: {e}")
+            # The measurement is ALWAYS the programmatically parsed API value.
             prompt = (
-                "You are a parametric insurance oracle. Report ONLY the measured "
-                f"7-day rainfall total ({total} mm) for {loc} ({lat},{lon}). "
-                "You do NOT decide the payout. "
-                'Return JSON: {"measured_value": string like "280.0", "evidence": string}. '
-                "evidence = 1 sentence summary."
+                "You are a parametric insurance oracle. Write ONE sentence of "
+                f"evidence for a flood assessment: {total} mm rain over {ndays} "
+                f"observed days in coverage {win_start}..{win_cap} near {loc} ({lat},{lon}). "
+                "You do NOT decide anything. "
+                'Return JSON: {"evidence": string}.'
             )
             llm = gl.nondet.exec_prompt(prompt, response_format="json")
             if not isinstance(llm, dict):
                 llm = {}
-            measured_str = str(llm.get("measured_value", str(total)))
-            try:
-                measured_f = float(measured_str)
-            except Exception:
-                measured_f, measured_str = total, str(total)
             locality = _fetch_locality(lat, lon)
             evidence = str(llm.get("evidence", f"7d rainfall {total}mm vs threshold {threshold}mm"))
             if locality:
                 evidence = evidence + f" Locality: {locality}."
             return {
-                "trigger_met": _decide_trigger("flood", measured_f, threshold),
-                "measured_value": measured_str,
+                "trigger_met": _decide_trigger("flood", total, threshold),
+                "measured_value": str(total),
                 "evidence": evidence,
             }
 
@@ -443,10 +512,14 @@ class ParaNusa(gl.Contract):
         lat, lon = str(pol.lat), str(pol.lon)
         loc = str(pol.location_name)
         threshold = _parse_threshold(pol.threshold)
+        # Server-side coverage binding: USGS only returns events inside the
+        # policy window, so historical quakes can never trigger a payout.
+        win_start, win_cap = self._window_days(pol)
         url = (
             "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson"
             + "&latitude=" + lat + "&longitude=" + lon
             + "&maxradiuskm=200&minmagnitude=4&limit=20&orderby=magnitude"
+            + "&starttime=" + win_start + "&endtime=" + win_cap
         )
 
         def leader_fn():
@@ -466,28 +539,24 @@ class ParaNusa(gl.Contract):
                 max_mag = float(max(mags)) if mags else 0.0
             except Exception as e:
                 raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad USGS payload: {e}")
+            # The measurement is ALWAYS the programmatically parsed API value.
             prompt = (
-                "You are a parametric insurance oracle. Report ONLY the maximum "
-                f"recent earthquake magnitude ({max_mag}) near {loc} ({lat},{lon}). "
-                "You do NOT decide the payout. "
-                'Return JSON: {"measured_value": string like "5.2", "evidence": string}. '
-                "evidence = 1 sentence summary."
+                "You are a parametric insurance oracle. Write ONE sentence of "
+                f"evidence for an earthquake assessment: max magnitude {max_mag} "
+                f"in coverage {win_start}..{win_cap} near {loc} ({lat},{lon}). "
+                "You do NOT decide anything. "
+                'Return JSON: {"evidence": string}.'
             )
             llm = gl.nondet.exec_prompt(prompt, response_format="json")
             if not isinstance(llm, dict):
                 llm = {}
-            measured_str = str(llm.get("measured_value", str(max_mag)))
-            try:
-                measured_f = float(measured_str)
-            except Exception:
-                measured_f, measured_str = max_mag, str(max_mag)
             locality = _fetch_locality(lat, lon)
             evidence = str(llm.get("evidence", f"max M{max_mag} vs threshold M{threshold} within 200km"))
             if locality:
                 evidence = evidence + f" Locality: {locality}."
             return {
-                "trigger_met": _decide_trigger("earthquake", measured_f, threshold),
-                "measured_value": measured_str,
+                "trigger_met": _decide_trigger("earthquake", max_mag, threshold),
+                "measured_value": str(max_mag),
                 "evidence": evidence,
             }
 
@@ -545,6 +614,8 @@ class ParaNusa(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Claim not assessed yet")
         if not pol.trigger_met:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Trigger not met, no payout")
+        if not pol.assess_tx:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Link assessment proof first")
         if self.balance < pol.payout_amount:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Pool insufficient, ask owner to fund_pool")
 
@@ -556,15 +627,59 @@ class ParaNusa(gl.Contract):
 
     @gl.public.write
     def cancel_policy(self, policy_id: str) -> None:
+        # HOLDER ONLY. The insurer cannot unilaterally cancel approved cover
+        # (it must use reject_policy for pending requests). A payable claim
+        # (assessed + trigger met + unpaid) can NEVER be cancelled away -
+        # by anyone - so winning assessments stay payable.
+        pol = self._require_policy(policy_id)
+        if gl.message.sender_address != pol.holder:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Only holder can cancel")
+        if pol.paid:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Already paid")
+        if pol.assessed and pol.trigger_met:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Payable claim cannot be cancelled")
+        if pol.active:
+            # release the lock only once (double cancel must not double-decrement)
+            self.total_locked = self.total_locked - pol.payout_amount
+        self.policies[policy_id].active = False
+        if not pol.assessed:
+            self._refund_premium(policy_id)
+
+    @gl.public.write
+    def reject_policy(self, policy_id: str) -> None:
+        # Insurer declines a PENDING request. Premium is refunded in full -
+        # rejecting must never be a way to harvest premiums.
+        if gl.message.sender_address != self.owner:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Only insurer can reject")
+        pol = self._require_policy(policy_id)
+        if pol.approved:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Already approved, use expiry")
+        if pol.paid:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Already paid")
+        self.policies[policy_id].active = False
+        self._refund_premium(policy_id)
+
+    @gl.public.write
+    def expire_policy(self, policy_id: str) -> None:
+        # Safe unilateral recovery after the coverage window ends. Releases
+        # unused reserves WITHOUT touching legitimate claims: a payable claim
+        # (assessed + met + unpaid) stays open and payable forever.
         pol = self._require_policy(policy_id)
         if gl.message.sender_address != self.owner and gl.message.sender_address != pol.holder:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Not authorized")
         if pol.paid:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Already paid")
+        if not pol.approved:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Policy never approved")
+        if u256(_now_ts()) <= pol.end_ts:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Coverage window not expired")
+        if pol.assessed and pol.trigger_met:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Payable claim survives expiry")
         if pol.active:
-            # release the lock only once (double cancel must not double-decrement)
             self.total_locked = self.total_locked - pol.payout_amount
         self.policies[policy_id].active = False
+        if not pol.assessed:
+            self._refund_premium(policy_id)
 
     # ---------- views ----------
 
@@ -590,6 +705,7 @@ class ParaNusa(gl.Contract):
             "approved": pol.approved,
             "start_ts": int(pol.start_ts),
             "end_ts": int(pol.end_ts),
+            "refunded": pol.refunded,
         }
 
     @gl.public.view
@@ -599,6 +715,7 @@ class ParaNusa(gl.Contract):
             "policy_count": int(self.policy_count),
             "total_premiums": int(self.total_premiums),
             "total_payouts": int(self.total_payouts),
+            "total_refunds": int(self.total_refunds),
             "total_locked": int(self.total_locked),
             "pool_balance": int(self.balance),
         }

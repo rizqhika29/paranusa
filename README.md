@@ -3,7 +3,7 @@
 > **Drought, flood, and earthquake coverage that pays automatically from real-world data — no adjusters, no interpretation disputes, no centralized oracles.**
 
 [![GenLayer](https://img.shields.io/badge/GenLayer-Studionet-F5A524)](https://studio.genlayer.com/)
-[![Contract](https://img.shields.io/badge/contract-0x5FcD...0D743-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743)
+[![Contract](https://img.shields.io/badge/contract-0x4Df6...5318a-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0x4Df6BCEBd759477d57678773Fc1F2A8e555D318a)
 [![Tests](https://img.shields.io/badge/direct--tests-38%20passed-34D399)](#-testing)
 [![Frontend](https://img.shields.io/badge/frontend-Next.js_15-black)](./frontend)
 
@@ -23,7 +23,7 @@ No claim forms. No "under review". Data says yes → money moves.
 
 | | |
 |---|---|
-| **Contract** | [`0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743`](https://explorer-studio.genlayer.com/contracts/0x5FcD9462Fa8c96Df28ceFbEcb3a3E7106720D743) |
+| **Contract** | [`0x4Df6BCEBd759477d57678773Fc1F2A8e555D318a`](https://explorer-studio.genlayer.com/contracts/0x4Df6BCEBd759477d57678773Fc1F2A8e555D318a) |
 | **Network** | GenLayer Studionet (chain `61999`) |
 | **Frontend** | [`/app`](./frontend) — auto-connected via `.env.production` |
 
@@ -57,9 +57,11 @@ natively**, then force AI validators to verify each other before state changes.
 fund_pool()                        — insurer locks GEN as payout reserve
   → create_policy(...)             — request (premium ≥1% of payout, else revert)
   → approve_policy(id, days)       — insurer only: solvency check + immutable window
-  → assess_claim(id)               — one-time, inside window, web + LLM + consensus
-  → link_proof(id, tx_hash)        — bind assessment proof on-chain
+  → assess_claim(id)               — one-time, in-window data only, web + LLM + consensus
+  → link_proof(id, tx_hash)        — bind assessment proof on-chain (required to claim)
   → claim_payout(id)               — GEN flows to holder if trigger_met
+  → cancel (holder, never payable claims) · reject (insurer, pending + refund) ·
+    expire (post-window recovery, payable claims survive)
 ```
 
 ### Inside `assess_claim` — 4 stages

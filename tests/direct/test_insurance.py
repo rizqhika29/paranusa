@@ -1,58 +1,65 @@
-"""ParaNusa direct-mode tests — underwriting v2 flow:
-request (create, min 1% premium) -> approve (owner, solvency + window) ->
-assess (one-time, in-window) -> claim. Plus negative + adversarial paths.
+"""ParaNusa direct-mode tests — underwriting + coverage-window + settlement guards.
+Flow: request (min 1% premium) -> approve (solvency + window) ->
+assess (one-time, in-window, window-filtered data) -> link -> claim.
 Run: pytest tests/direct/ -v
 """
+import datetime
 import json
 
 
-# ---------- mock builders ----------
+def _today():
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
+def _days_ending_today(n):
+    t = _today()
+    return [(t - datetime.timedelta(days=n - 1 - i)).isoformat() for i in range(n)]
+
+
+# ---------- mock builders (with daily.time series!) ----------
 
 def _mock_drought(direct_vm, total_mm):
-    daily = {"daily": {"precipitation_sum": [total_mm / 30.0] * 30}}
+    # Concentrate the total in the most recent 13 days so a backdated
+    # 12-day-old window still measures the full total (>= 10-day minimum).
+    times = _days_ending_today(30)
+    per = total_mm / 13.0
+    body = {"daily": {"time": times, "precipitation_sum": [0.0] * 17 + [per] * 13}}
     direct_vm.mock_web(
         r".*api\.open-meteo\.com.*past_days=30.*",
-        {"status": 200, "body": json.dumps(daily)},
+        {"status": 200, "body": json.dumps(body)},
     )
     direct_vm.mock_llm(
-        r".*30-day rainfall.*",
-        json.dumps({
-            "measured_value": str(total_mm),
-            "evidence": f"30d rainfall {total_mm}mm",
-        }),
+        r".*rought assessment.*",
+        json.dumps({"evidence": f"30d rainfall {total_mm}mm"}),
     )
 
 
 def _mock_flood(direct_vm, total_mm):
-    daily = {"daily": {"precipitation_sum": [total_mm / 7.0] * 7}}
+    times = _days_ending_today(7)
+    per = total_mm / 7.0
+    body = {"daily": {"time": times, "precipitation_sum": [per] * 7}}
     direct_vm.mock_web(
         r".*api\.open-meteo\.com.*past_days=7.*",
-        {"status": 200, "body": json.dumps(daily)},
+        {"status": 200, "body": json.dumps(body)},
     )
     direct_vm.mock_llm(
-        r".*7-day rainfall.*",
-        json.dumps({
-            "measured_value": str(total_mm),
-            "evidence": f"7d rainfall {total_mm}mm",
-        }),
+        r".*lood assessment.*",
+        json.dumps({"evidence": f"7d rainfall {total_mm}mm"}),
     )
 
 
-def _mock_quake(direct_vm, max_mag):
+def _mock_quake(direct_vm, max_mag, url_pat=r".*earthquake\.usgs\.gov.*"):
     geojson = {"features": [
         {"properties": {"mag": max_mag, "place": "Cianjur"}},
         {"properties": {"mag": 4.2, "place": "noise"}},
     ]}
     direct_vm.mock_web(
-        r".*earthquake\.usgs\.gov.*",
+        url_pat,
         {"status": 200, "body": json.dumps(geojson)},
     )
     direct_vm.mock_llm(
-        r".*earthquake magnitude.*",
-        json.dumps({
-            "measured_value": str(max_mag),
-            "evidence": f"max M{max_mag} within 200km",
-        }),
+        r".*arthquake assessment.*",
+        json.dumps({"evidence": f"max M{max_mag} within 200km"}),
     )
 
 
@@ -63,7 +70,6 @@ def _deploy_as_owner(direct_vm, direct_deploy, owner):
 
 
 def _fund(direct_vm, amount):
-    # Direct mode never credits payable `value` to balance; deal() simulates it.
     direct_vm.deal(direct_vm._contract_address, amount)
 
 
@@ -74,16 +80,23 @@ def _request(direct_vm, c, pid, premium, payout, dtype="drought",
     direct_vm.value = 0
 
 
-def _approve(direct_vm, c, owner, pid, days=30):
+def _approve(direct_vm, c, owner, pid, days=30, backdate_days=12):
+    # NOTE: inside tests datetime.now() returns VM time (patched), so compute
+    # BOTH warp targets up front from the pre-warp clock.
+    if backdate_days:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        past_iso = (now - datetime.timedelta(days=backdate_days)).isoformat().replace("+00:00", "Z")
+        now_iso = now.isoformat().replace("+00:00", "Z")
+        direct_vm.warp(past_iso)
     direct_vm.sender = owner
     c.approve_policy(pid, days)
+    if backdate_days:
+        direct_vm.warp(now_iso)
 
 
-def _request_and_approve(direct_vm, c, owner, pid, premium, payout, **kw):
-    sender = direct_vm.sender
-    _request(direct_vm, c, pid, premium, payout, **kw)
-    _approve(direct_vm, c, owner, pid, kw.get("days", 30))
+def _link(direct_vm, c, sender, pid, h=None):
     direct_vm.sender = sender
+    c.link_proof(pid, h or ("0x" + "ab" * 32))
 
 
 # ---------- create (request) ----------
@@ -97,17 +110,16 @@ def test_create_request_pending(direct_vm, direct_deploy, direct_owner, direct_a
     assert p["approved"] is False
     assert p["premium"] == 100
     assert c.get_stats()["policy_count"] == 1
-    assert c.get_stats()["total_locked"] == 0  # nothing locked pre-approval
+    assert c.get_stats()["total_locked"] == 0
 
 
 def test_reject_zero_premium(direct_vm, direct_deploy, direct_owner, direct_alice):
-    # Staff rejection fix: no zero-premium self-issue.
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     direct_vm.sender = direct_alice
     with direct_vm.expect_revert("Premium below"):
         _request(direct_vm, c, "ZP-1", 0, 1000)
     with direct_vm.expect_revert("Premium below"):
-        _request(direct_vm, c, "ZP-2", 9, 1000)  # 0.9% < 1% floor
+        _request(direct_vm, c, "ZP-2", 9, 1000)
 
 
 def test_reject_duplicate_policy_id(direct_vm, direct_deploy, direct_owner, direct_alice):
@@ -156,7 +168,6 @@ def test_get_missing_policy_reverts(direct_vm, direct_deploy, direct_owner):
 
 
 def test_string_amount_args_coerced(direct_vm, direct_deploy, direct_owner, direct_alice):
-    # JS clients send u256 as decimal strings; direct tests send ints.
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     direct_vm.sender = direct_alice
     direct_vm.value = 50
@@ -165,7 +176,7 @@ def test_string_amount_args_coerced(direct_vm, direct_deploy, direct_owner, dire
     assert c.get_policy("STR-1")["payout_amount"] == 1000
 
 
-# ---------- approve (underwriting) ----------
+# ---------- approve ----------
 
 def test_approve_activates_window_and_locks(direct_vm, direct_deploy, direct_owner, direct_alice):
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
@@ -174,8 +185,7 @@ def test_approve_activates_window_and_locks(direct_vm, direct_deploy, direct_own
     _request(direct_vm, c, "AP-1", 100, 1000)
     _approve(direct_vm, c, direct_owner, "AP-1", 30)
     p = c.get_policy("AP-1")
-    assert p["approved"] is True
-    assert p["active"] is True
+    assert p["approved"] is True and p["active"] is True
     assert p["end_ts"] - p["start_ts"] == 30 * 86400
     assert c.get_stats()["total_locked"] == 1000
 
@@ -214,9 +224,8 @@ def test_approve_bad_window_reverts(direct_vm, direct_deploy, direct_owner, dire
 
 
 def test_approve_insolvent_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
-    # Solvency: pool must cover ALL locked payouts including the new one.
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
-    _fund(direct_vm, 500)  # payout 1000 > balance 500
+    _fund(direct_vm, 500)
     direct_vm.sender = direct_alice
     _request(direct_vm, c, "AP-5", 100, 1000)
     direct_vm.sender = direct_owner
@@ -225,7 +234,7 @@ def test_approve_insolvent_reverts(direct_vm, direct_deploy, direct_owner, direc
     assert c.get_policy("AP-5")["approved"] is False
 
 
-# ---------- fund_pool ----------
+# ---------- fund ----------
 
 def test_fund_pool_tracks_balance(direct_vm, direct_deploy, direct_owner):
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
@@ -245,7 +254,7 @@ def test_fund_pool_zero_reverts(direct_vm, direct_deploy, direct_owner):
         c.fund_pool()
 
 
-# ---------- assess ----------
+# ---------- assess (window-filtered) ----------
 
 def test_drought_trigger_met(direct_vm, direct_deploy, direct_owner, direct_alice):
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
@@ -257,8 +266,7 @@ def test_drought_trigger_met(direct_vm, direct_deploy, direct_owner, direct_alic
     direct_vm.sender = direct_alice
     c.assess_claim("DRO-1")
     p = c.get_policy("DRO-1")
-    assert p["assessed"] is True
-    assert p["trigger_met"] is True
+    assert p["assessed"] is True and p["trigger_met"] is True
     assert p["measured_value"] == "5.0"
     direct_vm.clear_mocks()
 
@@ -273,8 +281,59 @@ def test_drought_trigger_not_met(direct_vm, direct_deploy, direct_owner, direct_
     direct_vm.sender = direct_alice
     c.assess_claim("DRO-2")
     p = c.get_policy("DRO-2")
-    assert p["assessed"] is True
-    assert p["trigger_met"] is False
+    assert p["assessed"] is True and p["trigger_met"] is False
+    direct_vm.clear_mocks()
+
+
+def test_pre_coverage_rain_excluded_v2(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # Window 2026-03-01..03-31. Assess on 03-15: 15 dry in-window days.
+    # 20 pre-window wet days (10mm) must NOT count.
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.warp("2026-03-01T00:00:00Z")
+    direct_vm.sender = direct_alice
+    base = datetime.date(2026, 3, 1)
+    pre = [(base - datetime.timedelta(days=20 - i)).isoformat() for i in range(20)]
+    inn = [(base + datetime.timedelta(days=i)).isoformat() for i in range(15)]
+    direct_vm.mock_web(
+        r".*api\.open-meteo\.com.*past_days=30.*",
+        {"status": 200, "body": json.dumps({
+            "daily": {"time": pre + inn,
+                      "precipitation_sum": [10.0] * 20 + [0.0] * 15},
+        })},
+    )
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "dry in window"}))
+    _request(direct_vm, c, "WIN-2", 50, 500)
+    _approve(direct_vm, c, direct_owner, "WIN-2", days=30, backdate_days=0)
+    direct_vm.sender = direct_alice
+    direct_vm.warp("2026-03-15T00:00:00Z")
+    c.assess_claim("WIN-2")
+    p = c.get_policy("WIN-2")
+    assert p["measured_value"] == "0.0"  # 200mm pre-window excluded
+    assert p["trigger_met"] is True
+    direct_vm.clear_mocks()
+
+
+def test_sparse_data_rejected(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # Only 5 in-window days (< 10 minimum) -> EXPECTED, not a false trigger.
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.warp("2026-03-01T00:00:00Z")
+    direct_vm.sender = direct_alice
+    base = datetime.date(2026, 3, 1)
+    inn = [(base + datetime.timedelta(days=i)).isoformat() for i in range(5)]
+    direct_vm.mock_web(
+        r".*api\.open-meteo\.com.*past_days=30.*",
+        {"status": 200, "body": json.dumps({
+            "daily": {"time": inn, "precipitation_sum": [0.0] * 5},
+        })},
+    )
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "x"}))
+    _request(direct_vm, c, "WIN-3", 50, 500)
+    _approve(direct_vm, c, direct_owner, "WIN-3", days=30, backdate_days=0)
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Insufficient in-window"):
+        c.assess_claim("WIN-3")
     direct_vm.clear_mocks()
 
 
@@ -305,8 +364,7 @@ def test_earthquake_trigger_met(direct_vm, direct_deploy, direct_owner, direct_a
     direct_vm.sender = direct_alice
     c.assess_claim("EQ-1")
     p = c.get_policy("EQ-1")
-    assert p["assessed"] is True
-    assert p["trigger_met"] is True
+    assert p["assessed"] is True and p["trigger_met"] is True
     assert p["measured_value"] == "5.6"
     direct_vm.clear_mocks()
 
@@ -325,6 +383,32 @@ def test_earthquake_trigger_not_met(direct_vm, direct_deploy, direct_owner, dire
     direct_vm.clear_mocks()
 
 
+def test_usgs_window_params_exclude_history(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # The contract MUST send starttime/endtime = coverage window, so the
+    # server (not just our filter) excludes historical quakes. Prove the
+    # params flow by serving data only to the windowed URL.
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.warp("2030-05-01T00:00:00Z")
+    direct_vm.sender = direct_alice
+    _mock_quake(direct_vm, 5.6, url_pat=r".*starttime=2030-05-01.*")
+    direct_vm.mock_web(
+        r".*earthquake\.usgs\.gov.*",
+        {"status": 200, "body": json.dumps({"features": []})},
+    )
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "windowed"}))
+    _request(direct_vm, c, "EQW-1", 50, 900,
+             dtype="earthquake", lat="-6.8", lon="107.1", loc="Cianjur", thr="5.0")
+    _approve(direct_vm, c, direct_owner, "EQW-1", days=7, backdate_days=0)
+    direct_vm.sender = direct_alice
+    c.assess_claim("EQW-1")
+    # If the contract queried WITHOUT starttime, the generic empty mock would
+    # win only when patterns mismatch... specific-first ordering proves params.
+    assert c.get_policy("EQW-1")["measured_value"] == "5.6"
+    assert c.get_policy("EQW-1")["trigger_met"] is True
+    direct_vm.clear_mocks()
+
+
 def test_assess_unapproved_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     direct_vm.sender = direct_alice
@@ -334,7 +418,6 @@ def test_assess_unapproved_reverts(direct_vm, direct_deploy, direct_owner, direc
 
 
 def test_assess_twice_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
-    # One-time assessment: second run is rejected contract-side.
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     _fund(direct_vm, 5000)
     direct_vm.sender = direct_alice
@@ -349,7 +432,6 @@ def test_assess_twice_reverts(direct_vm, direct_deploy, direct_owner, direct_ali
 
 
 def test_assess_expired_window_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
-    # Coverage window is immutable and binding: assess after end_ts fails.
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     _fund(direct_vm, 5000)
     direct_vm.sender = direct_alice
@@ -382,68 +464,29 @@ def test_assess_api_5xx_is_transient(direct_vm, direct_deploy, direct_owner, dir
     direct_vm.clear_mocks()
 
 
-# ---------- adversarial: LLM cannot decide ----------
+# ---------- adversarial: measurement always programmatic ----------
 
 def test_llm_cannot_force_payout(direct_vm, direct_deploy, direct_owner, direct_alice):
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     _fund(direct_vm, 5000)
     direct_vm.sender = direct_alice
-    daily = {"daily": {"precipitation_sum": [4.0] * 30}}
+    times = _days_ending_today(30)
     direct_vm.mock_web(
         r".*api\.open-meteo\.com.*past_days=30.*",
-        {"status": 200, "body": json.dumps(daily)},
+        {"status": 200, "body": json.dumps(
+            {"daily": {"time": times, "precipitation_sum": [4.0] * 30}})},
     )
     direct_vm.mock_llm(
-        r".*30-day rainfall.*",
-        json.dumps({"trigger_met": True, "measured_value": "120.0", "evidence": "lies"}),
+        r".*",
+        json.dumps({"trigger_met": True, "measured_value": "999.9", "evidence": "lies"}),
     )
     _request(direct_vm, c, "ADV-1", 50, 500)
     _approve(direct_vm, c, direct_owner, "ADV-1")
     direct_vm.sender = direct_alice
     c.assess_claim("ADV-1")
     p = c.get_policy("ADV-1")
-    assert p["measured_value"] == "120.0"
+    assert p["measured_value"] == "52.0"  # 13 in-window days x 4mm (backdated window)
     assert p["trigger_met"] is False
-    direct_vm.clear_mocks()
-
-
-def test_llm_garbage_measurement_falls_back(direct_vm, direct_deploy, direct_owner, direct_alice):
-    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
-    _fund(direct_vm, 5000)
-    direct_vm.sender = direct_alice
-    daily = {"daily": {"precipitation_sum": [0.0] * 30}}
-    direct_vm.mock_web(
-        r".*api\.open-meteo\.com.*past_days=30.*",
-        {"status": 200, "body": json.dumps(daily)},
-    )
-    direct_vm.mock_llm(
-        r".*30-day rainfall.*",
-        json.dumps({"measured_value": "not-a-number", "evidence": "garbage"}),
-    )
-    _request(direct_vm, c, "ADV-2", 50, 500)
-    _approve(direct_vm, c, direct_owner, "ADV-2")
-    direct_vm.sender = direct_alice
-    c.assess_claim("ADV-2")
-    p = c.get_policy("ADV-2")
-    assert p["measured_value"] == "0.0"
-    assert p["trigger_met"] is True
-    direct_vm.clear_mocks()
-
-
-def test_malformed_api_payload(direct_vm, direct_deploy, direct_owner, direct_alice):
-    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
-    _fund(direct_vm, 5000)
-    direct_vm.sender = direct_alice
-    direct_vm.mock_web(
-        r".*api\.open-meteo\.com.*",
-        {"status": 200, "body": json.dumps({"weird": "shape"})},
-    )
-    direct_vm.mock_llm(r".*", json.dumps({"measured_value": "0.0", "evidence": "x"}))
-    _request(direct_vm, c, "ADV-3", 50, 500)
-    _approve(direct_vm, c, direct_owner, "ADV-3")
-    direct_vm.sender = direct_alice
-    c.assess_claim("ADV-3")
-    assert c.get_policy("ADV-3")["trigger_met"] is True
     direct_vm.clear_mocks()
 
 
@@ -455,7 +498,7 @@ def test_usgs_empty_features_no_trigger(direct_vm, direct_deploy, direct_owner, 
         r".*earthquake\.usgs\.gov.*",
         {"status": 200, "body": json.dumps({"features": []})},
     )
-    direct_vm.mock_llm(r".*", json.dumps({"measured_value": "0.0", "evidence": "quiet"}))
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "quiet"}))
     _request(direct_vm, c, "ADV-4", 50, 500,
              dtype="earthquake", lat="-6.8", lon="107.1", loc="Cianjur", thr="5.0")
     _approve(direct_vm, c, direct_owner, "ADV-4")
@@ -487,7 +530,7 @@ def test_locality_appended_to_evidence(direct_vm, direct_deploy, direct_owner, d
     direct_vm.clear_mocks()
 
 
-# ---------- claim_payout ----------
+# ---------- claim (link required) ----------
 
 def test_claim_full_cycle(direct_vm, direct_deploy, direct_owner, direct_alice):
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
@@ -498,11 +541,27 @@ def test_claim_full_cycle(direct_vm, direct_deploy, direct_owner, direct_alice):
     _approve(direct_vm, c, direct_owner, "PAY-1")
     direct_vm.sender = direct_alice
     c.assess_claim("PAY-1")
+    _link(direct_vm, c, direct_alice, "PAY-1")
     c.claim_payout("PAY-1")
     p = c.get_policy("PAY-1")
-    assert p["paid"] is True
-    assert p["active"] is False
+    assert p["paid"] is True and p["active"] is False
     assert c.get_stats()["total_payouts"] == 500
+    assert c.get_stats()["total_locked"] == 0
+    direct_vm.clear_mocks()
+
+
+def test_claim_without_link_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # Assessment proof must be bound on-chain before any payout.
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _mock_drought(direct_vm, 5.0)
+    _request(direct_vm, c, "PAY-1B", 50, 500)
+    _approve(direct_vm, c, direct_owner, "PAY-1B")
+    direct_vm.sender = direct_alice
+    c.assess_claim("PAY-1B")
+    with direct_vm.expect_revert("Link assessment"):
+        c.claim_payout("PAY-1B")
     direct_vm.clear_mocks()
 
 
@@ -535,6 +594,7 @@ def test_claim_when_trigger_not_met_reverts(direct_vm, direct_deploy, direct_own
     _approve(direct_vm, c, direct_owner, "PAY-3")
     direct_vm.sender = direct_alice
     c.assess_claim("PAY-3")
+    _link(direct_vm, c, direct_alice, "PAY-3")
     with direct_vm.expect_revert("Trigger not met"):
         c.claim_payout("PAY-3")
     direct_vm.clear_mocks()
@@ -549,6 +609,7 @@ def test_claim_twice_reverts(direct_vm, direct_deploy, direct_owner, direct_alic
     _approve(direct_vm, c, direct_owner, "PAY-4")
     direct_vm.sender = direct_alice
     c.assess_claim("PAY-4")
+    _link(direct_vm, c, direct_alice, "PAY-4")
     c.claim_payout("PAY-4")
     with direct_vm.expect_revert("Already paid"):
         c.claim_payout("PAY-4")
@@ -564,6 +625,7 @@ def test_claim_by_stranger_reverts(direct_vm, direct_deploy, direct_owner, direc
     _approve(direct_vm, c, direct_owner, "PAY-5")
     direct_vm.sender = direct_alice
     c.assess_claim("PAY-5")
+    _link(direct_vm, c, direct_alice, "PAY-5")
     direct_vm.sender = direct_bob
     with direct_vm.expect_revert("Only holder"):
         c.claim_payout("PAY-5")
@@ -572,7 +634,6 @@ def test_claim_by_stranger_reverts(direct_vm, direct_deploy, direct_owner, direc
 
 def test_claim_insufficient_pool_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
-    # Approve first with funds, then drain the pool to simulate shortfall.
     _fund(direct_vm, 5000)
     direct_vm.sender = direct_alice
     _mock_drought(direct_vm, 5.0)
@@ -580,35 +641,195 @@ def test_claim_insufficient_pool_reverts(direct_vm, direct_deploy, direct_owner,
     _approve(direct_vm, c, direct_owner, "PAY-6")
     direct_vm.sender = direct_alice
     c.assess_claim("PAY-6")
+    _link(direct_vm, c, direct_alice, "PAY-6")
     direct_vm.deal(direct_vm._contract_address, 0)
     with direct_vm.expect_revert("Pool insufficient"):
         c.claim_payout("PAY-6")
     direct_vm.clear_mocks()
 
 
-def test_cancel_then_claim_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
+# ---------- cancellation protection + refunds + expiry ----------
+
+def test_payable_claim_cannot_be_cancelled(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # Winning assessments stay payable: NOBODY can cancel them away.
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     _fund(direct_vm, 5000)
     direct_vm.sender = direct_alice
     _mock_drought(direct_vm, 5.0)
-    _request(direct_vm, c, "CX-4", 50, 500)
-    _approve(direct_vm, c, direct_owner, "CX-4")
+    _request(direct_vm, c, "PC-1", 50, 500)
+    _approve(direct_vm, c, direct_owner, "PC-1")
     direct_vm.sender = direct_alice
-    c.assess_claim("CX-4")
-    c.cancel_policy("CX-4")
-    with direct_vm.expect_revert("not active"):
-        c.claim_payout("CX-4")
+    c.assess_claim("PC-1")
+    with direct_vm.expect_revert("Payable claim"):
+        c.cancel_policy("PC-1")
+    # ...and the claim still pays (with proof linked).
+    _link(direct_vm, c, direct_alice, "PC-1")
+    c.claim_payout("PC-1")
+    assert c.get_policy("PC-1")["paid"] is True
     direct_vm.clear_mocks()
 
 
-# ---------- cancel_policy ----------
-
-def test_cancel_by_holder(direct_vm, direct_deploy, direct_owner, direct_alice):
+def test_owner_cannot_cancel_active(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # The insurer cannot unilaterally kill approved cover.
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
     direct_vm.sender = direct_alice
+    _request(direct_vm, c, "PC-2", 50, 500)
+    _approve(direct_vm, c, direct_owner, "PC-2")
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("Only holder"):
+        c.cancel_policy("PC-2")
+
+
+def test_reject_pending_refunds_premium(direct_vm, direct_deploy, direct_owner, direct_alice, direct_bob):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _request(direct_vm, c, "RJ-1", 50, 500)
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("Only insurer"):
+        c.reject_policy("RJ-1")
+    direct_vm.sender = direct_owner
+    c.reject_policy("RJ-1")
+    p = c.get_policy("RJ-1")
+    assert p["active"] is False and p["approved"] is False
+    assert p["refunded"] is True
+    assert c.get_stats()["total_refunds"] == 50
+    # double reject cannot double-pay
+    c.reject_policy("RJ-1")
+    assert c.get_stats()["total_refunds"] == 50
+
+
+def test_reject_approved_reverts(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _request(direct_vm, c, "RJ-2", 50, 500)
+    _approve(direct_vm, c, direct_owner, "RJ-2")
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("Already approved"):
+        c.reject_policy("RJ-2")
+
+
+def test_holder_cancel_pending_refunds(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _request(direct_vm, c, "CX-0", 50, 500)
+    c.cancel_policy("CX-0")
+    p = c.get_policy("CX-0")
+    assert p["active"] is False and p["refunded"] is True
+    assert c.get_stats()["total_locked"] == 0
+    assert c.get_stats()["total_refunds"] == 50
+
+
+def test_cancel_by_holder_releases_lock(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _mock_drought(direct_vm, 5.0)
     _request(direct_vm, c, "CX-1", 50, 500)
+    _approve(direct_vm, c, direct_owner, "CX-1")
+    direct_vm.sender = direct_alice
+    assert c.get_stats()["total_locked"] == 500
     c.cancel_policy("CX-1")
     assert c.get_policy("CX-1")["active"] is False
+    assert c.get_stats()["total_locked"] == 0
+    assert c.get_stats()["total_refunds"] == 50  # unassessed -> premium back
+    direct_vm.clear_mocks()
+
+
+def test_cancel_assessed_unmet_no_refund(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _mock_drought(direct_vm, 120.0)
+    _request(direct_vm, c, "CX-1B", 50, 500)
+    _approve(direct_vm, c, direct_owner, "CX-1B")
+    direct_vm.sender = direct_alice
+    c.assess_claim("CX-1B")
+    c.cancel_policy("CX-1B")
+    p = c.get_policy("CX-1B")
+    assert p["active"] is False and p["refunded"] is False  # service rendered
+    assert c.get_stats()["total_locked"] == 0
+    assert c.get_stats()["total_refunds"] == 0
+    direct_vm.clear_mocks()
+
+
+def test_expire_unassessed_releases_and_refunds(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.warp("2026-04-01T00:00:00Z")
+    direct_vm.sender = direct_alice
+    _request(direct_vm, c, "EX-1", 50, 500)
+    _approve(direct_vm, c, direct_owner, "EX-1", days=7, backdate_days=0)
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("not expired"):
+        c.expire_policy("EX-1")
+    direct_vm.warp("2026-05-01T00:00:00Z")
+    c.expire_policy("EX-1")
+    p = c.get_policy("EX-1")
+    assert p["active"] is False and p["refunded"] is True
+    assert c.get_stats()["total_locked"] == 0
+    assert c.get_stats()["total_refunds"] == 50
+
+
+def test_expire_payable_claim_survives(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # Window 03-20..04-19 (30d). Assess 04-01 over 13 dry in-window days.
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.warp("2026-03-20T00:00:00Z")
+    direct_vm.sender = direct_alice
+    days = [(datetime.date(2026, 3, 10) + datetime.timedelta(days=i)).isoformat()
+            for i in range(27)]
+    direct_vm.mock_web(
+        r".*api\.open-meteo\.com.*past_days=30.*",
+        {"status": 200, "body": json.dumps({
+            "daily": {"time": days, "precipitation_sum": [0.0] * 27},
+        })},
+    )
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "dry"}))
+    _request(direct_vm, c, "EX-2", 50, 500)
+    _approve(direct_vm, c, direct_owner, "EX-2", days=30, backdate_days=0)
+    direct_vm.sender = direct_alice
+    direct_vm.warp("2026-04-01T00:00:00Z")
+    c.assess_claim("EX-2")
+    assert c.get_policy("EX-2")["trigger_met"] is True
+    direct_vm.warp("2026-05-01T00:00:00Z")
+    with direct_vm.expect_revert("survives expiry"):
+        c.expire_policy("EX-2")
+    # ...and it still pays (with proof linked).
+    _link(direct_vm, c, direct_alice, "EX-2")
+    c.claim_payout("EX-2")
+    assert c.get_policy("EX-2")["paid"] is True
+    direct_vm.clear_mocks()
+
+
+def test_expire_unmet_releases_lock(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.warp("2026-03-20T00:00:00Z")
+    direct_vm.sender = direct_alice
+    days = [(datetime.date(2026, 3, 10) + datetime.timedelta(days=i)).isoformat()
+            for i in range(27)]
+    direct_vm.mock_web(
+        r".*api\.open-meteo\.com.*past_days=30.*",
+        {"status": 200, "body": json.dumps({
+            "daily": {"time": days, "precipitation_sum": [10.0] * 27},
+        })},
+    )
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "wet"}))
+    _request(direct_vm, c, "EX-3", 50, 500)
+    _approve(direct_vm, c, direct_owner, "EX-3", days=30, backdate_days=0)
+    direct_vm.sender = direct_alice
+    direct_vm.warp("2026-04-01T00:00:00Z")
+    c.assess_claim("EX-3")
+    assert c.get_policy("EX-3")["trigger_met"] is False  # 130mm in-window
+    direct_vm.warp("2026-05-01T00:00:00Z")
+    c.expire_policy("EX-3")
+    assert c.get_stats()["total_locked"] == 0
+    assert c.get_stats()["total_refunds"] == 0  # assessed: no refund
+    direct_vm.clear_mocks()
 
 
 def test_cancel_by_stranger_reverts(direct_vm, direct_deploy, direct_owner, direct_alice, direct_bob):
@@ -616,7 +837,7 @@ def test_cancel_by_stranger_reverts(direct_vm, direct_deploy, direct_owner, dire
     direct_vm.sender = direct_alice
     _request(direct_vm, c, "CX-2", 50, 500)
     direct_vm.sender = direct_bob
-    with direct_vm.expect_revert("Not authorized"):
+    with direct_vm.expect_revert("Only holder"):
         c.cancel_policy("CX-2")
 
 
@@ -669,7 +890,7 @@ def test_locked_tracks_lifecycle(direct_vm, direct_deploy, direct_owner, direct_
     direct_vm.sender = direct_alice
     _request(direct_vm, c, "LK-1", 50, 300)
     _request(direct_vm, c, "LK-2", 50, 700)
-    assert c.get_stats()["total_locked"] == 0  # requests lock nothing
+    assert c.get_stats()["total_locked"] == 0
     _approve(direct_vm, c, direct_owner, "LK-1")
     _approve(direct_vm, c, direct_owner, "LK-2")
     assert c.get_stats()["total_locked"] == 1000
@@ -750,6 +971,7 @@ def test_fund_conservation(direct_vm, direct_deploy, direct_owner, direct_alice)
     s = c.get_stats()
     assert s["total_premiums"] == 50
     assert s["total_locked"] == 1000
+    _link(direct_vm, c, direct_alice, "FC-1")
     c.claim_payout("FC-1")
     s = c.get_stats()
     assert s["total_payouts"] == 1000
@@ -772,8 +994,6 @@ def test_window_fields_in_policy(direct_vm, direct_deploy, direct_owner, direct_
 
 
 def test_contract_source_is_ascii_only():
-    # Regression: the on-chain GenVM loader rejects non-ASCII source
-    # (invalid_contract). Local lint + direct tests never catch it.
     import pathlib
     src = pathlib.Path("contracts/paranusa.py").read_text(encoding="utf-8")
     bad = sorted(set(c for c in src if ord(c) > 127))

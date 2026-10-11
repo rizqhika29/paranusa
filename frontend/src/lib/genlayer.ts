@@ -55,6 +55,7 @@ export interface PolicyView {
   approved: boolean;
   start_ts: string;
   end_ts: string;
+  refunded: boolean;
 }
 
 export interface PoolStats {
@@ -63,6 +64,7 @@ export interface PoolStats {
   total_premiums: string;
   total_payouts: string;
   total_locked: string;
+  total_refunds: string;
   pool_balance: string;
 }
 
@@ -96,6 +98,7 @@ export async function readPolicy(
     approved: Boolean(r.approved ?? r[15] ?? false),
     start_ts: String(r.start_ts ?? r[16] ?? "0"),
     end_ts: String(r.end_ts ?? r[17] ?? "0"),
+    refunded: Boolean(r.refunded ?? r[18] ?? false),
   };
 }
 
@@ -112,7 +115,8 @@ export async function readStats(client: GenClient, contract: string): Promise<Po
     total_premiums: String(r.total_premiums ?? r[2] ?? "0"),
     total_payouts: String(r.total_payouts ?? r[3] ?? "0"),
     total_locked: String(r.total_locked ?? r[4] ?? "0"),
-    pool_balance: String(r.pool_balance ?? r[5] ?? r[4] ?? "0"),
+    total_refunds: String(r.total_refunds ?? r[5] ?? "0"),
+    pool_balance: String(r.pool_balance ?? r[6] ?? r[5] ?? r[4] ?? "0"),
   };
 }
 
