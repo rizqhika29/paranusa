@@ -234,7 +234,8 @@
 - [ ] NO redeploy for now (zero behavior change). Batch with the next
       functional redeploy. Live contract `0x2219...b223C` stays valid.
       (Superseded by session 15: redeployed `0x5FcD...0D743`,
-      then session 16: `0x4Df6...5318a` current.)
+      then session 16: `0x4Df6...5318a`, then session 17: `0xA6aB...8838d`
+      current.)
 
 ## 3. Architecture (MVP)
 
