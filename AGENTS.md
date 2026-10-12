@@ -209,6 +209,19 @@
       (warp-covered); payout-on-new-revision pending a MET event.
 - [x] Updated envs + docs. Resubmit with full E2E matrix.
 
+### 2026-10-12 — Session 17: Steward precision review (3rd rejection fix) ✅
+- [x] USGS exact second-precision bounds (`starttime/endtime` full ISO) +
+      client-side epoch-second filter (fixed ms-truncation bug that excluded
+      boundary-second events); rain counts COMPLETED days only (tx day always
+      excluded); `link_proof` one-time (no overwrite); frontend manual link
+      button as auto-link fallback.
+- [x] `pytest tests/direct/`: **62 passed**.
+- [x] Redeployed `0xA6aB...8838d`. Live: fund, 4 requests + holder-owned +
+      3 approves, owner-cancel revert (agreed), cancel+refund, reject+refund,
+      quake assess 0.0 agreed, drought sparse-guard revert agreed,
+      double-assess revert agreed, withdraw. Conservation holds.
+- [x] Updated envs + docs. Resubmit.
+
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
       in validator stderr. Cause: nondet closures capturing `self` (via
       `self._compare_errors`) + `Policy` instances (storage class).

@@ -436,6 +436,35 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
   const [busy, setBusy] = useState<string | null>(null);
   const [lookupErr, setLookupErr] = useState("");
   const [approveDays, setApproveDays] = useState("30");
+  const [linkHash, setLinkHash] = useState("");
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkErr, setLinkErr] = useState("");
+
+  async function linkManual() {
+    const h = linkHash.trim();
+    setLinkErr("");
+    if (!ready) return setLinkErr("Contract address is not valid yet.");
+    if (!/^0x[0-9a-fA-F]{64}$/.test(h)) return setLinkErr("Hash must be 0x + 64 hex chars.");
+    if (!policy) return;
+    if (!app.wallet) {
+      pushToast({ tone: "error", title: "Wallet not connected", message: "Connect a wallet first." });
+      return;
+    }
+    setLinkBusy(true);
+    await runWrite({
+      app,
+      label: `Link proof ${qid.trim()}`,
+      policyId: qid.trim(),
+      call: { functionName: "link_proof", args: [qid.trim(), h] },
+      successTitle: "Proof linked on-chain",
+      successMessage: "Any client can now read this assessment proof from the policy.",
+      onDone: async () => {
+        onDone();
+        await lookup(qid.trim());
+      },
+    });
+    setLinkBusy(false);
+  }
   const [lastHash, setLastHash] = useState<string | null>(null);
   const [lastLabel, setLastLabel] = useState("");
 
@@ -685,6 +714,25 @@ function TrackPanel({ onDone, initialId }: { onDone: () => void; initialId?: str
                 >
                   {busy === "reject_policy" ? "Rejecting…" : "Reject Request (insurer)"}
                 </button>
+              )}
+              {policy.assessed && !policy.assess_tx && (
+                <div className="field" style={{ marginBottom: 0 }}>
+                  <label>Bind assessment proof on-chain (one-time)</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input
+                      className="input"
+                      value={linkHash}
+                      onChange={(e) => setLinkHash(e.target.value)}
+                      placeholder="0x… (assess tx hash)"
+                      spellCheck={false}
+                    />
+                    <button className="btn btn-ghost btn-sm" onClick={linkManual} disabled={linkBusy}>
+                      {linkBusy ? "…" : "Bind"}
+                    </button>
+                  </div>
+                  {linkErr && <span className="err">{linkErr}</span>}
+                  <span className="hint">Usually automatic after assess; use this if auto-link failed.</span>
+                </div>
               )}
               {policy.approved && !policy.paid && (
                 <button

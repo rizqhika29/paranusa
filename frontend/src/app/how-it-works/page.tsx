@@ -41,8 +41,21 @@ export default function HowItWorks() {
                 <h4>Fetch stable data</h4>
                 <p className="muted" style={{ margin: 0 }}>
                   Drought/flood: <span className="code">api.open-meteo.com … past_days=30/7</span>.
-                  Earthquake: <span className="code">earthquake.usgs.gov … maxradiuskm=200</span>.
+                  Earthquake: <span className="code">earthquake.usgs.gov … starttime/endtime = coverage</span>.
                   Chosen because they are free, keyless, and return stable JSON across requests.
+                </p>
+              </div>
+            </div>
+            <div className="step">
+              <div>
+                <h4>Keep only completed in-coverage observations</h4>
+                <p className="muted" style={{ margin: 0 }}>
+                  Rainfall days are filtered to the policy window, and the
+                  still-running day is always excluded (partial + forecast
+                  values can never pay). USGS events are filtered by exact
+                  second-precision timestamps, server- and client-side. Too few
+                  observations → the assessment reverts instead of triggering on
+                  ~nothing.
                 </p>
               </div>
             </div>

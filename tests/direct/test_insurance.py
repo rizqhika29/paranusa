@@ -19,11 +19,11 @@ def _days_ending_today(n):
 # ---------- mock builders (with daily.time series!) ----------
 
 def _mock_drought(direct_vm, total_mm):
-    # Concentrate the total in the most recent 13 days so a backdated
-    # 12-day-old window still measures the full total (>= 10-day minimum).
-    times = _days_ending_today(30)
-    per = total_mm / 13.0
-    body = {"daily": {"time": times, "precipitation_sum": [0.0] * 17 + [per] * 13}}
+    # Total concentrated in the 12 completed days before today (today is
+    # always excluded as an incomplete observation).
+    times = _days_ending_today(31)
+    per = total_mm / 12.0
+    body = {"daily": {"time": times, "precipitation_sum": [0.0] * 18 + [per] * 12 + [0.0]}}
     direct_vm.mock_web(
         r".*api\.open-meteo\.com.*past_days=30.*",
         {"status": 200, "body": json.dumps(body)},
@@ -35,9 +35,10 @@ def _mock_drought(direct_vm, total_mm):
 
 
 def _mock_flood(direct_vm, total_mm):
+    # Total concentrated in the 6 completed days before today.
     times = _days_ending_today(7)
-    per = total_mm / 7.0
-    body = {"daily": {"time": times, "precipitation_sum": [per] * 7}}
+    per = total_mm / 6.0
+    body = {"daily": {"time": times, "precipitation_sum": [per] * 6 + [0.0]}}
     direct_vm.mock_web(
         r".*api\.open-meteo\.com.*past_days=7.*",
         {"status": 200, "body": json.dumps(body)},
@@ -48,10 +49,12 @@ def _mock_flood(direct_vm, total_mm):
     )
 
 
-def _mock_quake(direct_vm, max_mag, url_pat=r".*earthquake\.usgs\.gov.*"):
+def _mock_quake(direct_vm, max_mag, url_pat=r".*earthquake\.usgs\.gov.*", time_ms=None):
+    import time as _time
+    tms = time_ms if time_ms is not None else int(_time.time() * 1000)
     geojson = {"features": [
-        {"properties": {"mag": max_mag, "place": "Cianjur"}},
-        {"properties": {"mag": 4.2, "place": "noise"}},
+        {"properties": {"mag": max_mag, "place": "Cianjur", "time": tms}},
+        {"properties": {"mag": 4.2, "place": "noise", "time": tms}},
     ]}
     direct_vm.mock_web(
         url_pat,
@@ -391,7 +394,8 @@ def test_usgs_window_params_exclude_history(direct_vm, direct_deploy, direct_own
     _fund(direct_vm, 5000)
     direct_vm.warp("2030-05-01T00:00:00Z")
     direct_vm.sender = direct_alice
-    _mock_quake(direct_vm, 5.6, url_pat=r".*starttime=2030-05-01.*")
+    _mock_quake(direct_vm, 5.6, url_pat=r".*starttime=2030-05-01.*",
+                time_ms=int(datetime.datetime(2030, 5, 1, tzinfo=datetime.timezone.utc).timestamp() * 1000))
     direct_vm.mock_web(
         r".*earthquake\.usgs\.gov.*",
         {"status": 200, "body": json.dumps({"features": []})},
@@ -470,11 +474,11 @@ def test_llm_cannot_force_payout(direct_vm, direct_deploy, direct_owner, direct_
     c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
     _fund(direct_vm, 5000)
     direct_vm.sender = direct_alice
-    times = _days_ending_today(30)
+    times = _days_ending_today(31)
     direct_vm.mock_web(
         r".*api\.open-meteo\.com.*past_days=30.*",
         {"status": 200, "body": json.dumps(
-            {"daily": {"time": times, "precipitation_sum": [4.0] * 30}})},
+            {"daily": {"time": times, "precipitation_sum": [0.0] * 18 + [10.0] * 12 + [0.0]}})},
     )
     direct_vm.mock_llm(
         r".*",
@@ -485,7 +489,7 @@ def test_llm_cannot_force_payout(direct_vm, direct_deploy, direct_owner, direct_
     direct_vm.sender = direct_alice
     c.assess_claim("ADV-1")
     p = c.get_policy("ADV-1")
-    assert p["measured_value"] == "52.0"  # 13 in-window days x 4mm (backdated window)
+    assert p["measured_value"] == "120.0"  # parsed API value, never the LLM's
     assert p["trigger_met"] is False
     direct_vm.clear_mocks()
 
@@ -876,9 +880,61 @@ def test_link_proof_flow(direct_vm, direct_deploy, direct_owner, direct_alice, d
     direct_vm.sender = direct_alice
     c.link_proof("LP-1", "0x" + "ab" * 32)
     assert c.get_policy("LP-1")["assess_tx"] == "0x" + "ab" * 32
+    # Proof reference is one-time: it cannot be arbitrarily overwritten,
+    # not even by the owner.
     direct_vm.sender = direct_owner
-    c.link_proof("LP-1", "0x" + "cd" * 32)
-    assert c.get_policy("LP-1")["assess_tx"] == "0x" + "cd" * 32
+    with direct_vm.expect_revert("already linked"):
+        c.link_proof("LP-1", "0x" + "cd" * 32)
+    assert c.get_policy("LP-1")["assess_tx"] == "0x" + "ab" * 32
+    direct_vm.clear_mocks()
+
+
+def test_rain_today_excluded(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # 500mm falls TODAY (incomplete observation) + 12 dry completed days.
+    # Today must be ignored -> drought trigger True.
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    times = _days_ending_today(13)
+    direct_vm.mock_web(
+        r".*api\.open-meteo\.com.*past_days=30.*",
+        {"status": 200, "body": json.dumps({
+            "daily": {"time": times, "precipitation_sum": [0.0] * 12 + [500.0]},
+        })},
+    )
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "dry past, wet today"}))
+    _request(direct_vm, c, "TOD-1", 50, 500)
+    _approve(direct_vm, c, direct_owner, "TOD-1")
+    direct_vm.sender = direct_alice
+    c.assess_claim("TOD-1")
+    p = c.get_policy("TOD-1")
+    assert p["measured_value"] == "0.0"
+    assert p["trigger_met"] is True
+    direct_vm.clear_mocks()
+
+
+def test_quake_old_event_excluded(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # A big historic quake outside the coverage window must not count,
+    # even when the (mocked) server returns it: client-side exact filter.
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    old_ms = int(datetime.datetime(2020, 1, 15, tzinfo=datetime.timezone.utc).timestamp() * 1000)
+    direct_vm.mock_web(
+        r".*earthquake\.usgs\.gov.*",
+        {"status": 200, "body": json.dumps({"features": [
+            {"properties": {"mag": 7.5, "place": "historic", "time": old_ms}},
+        ]})},
+    )
+    direct_vm.mock_llm(r".*", json.dumps({"evidence": "old"}))
+    _request(direct_vm, c, "EQH-1", 50, 500,
+             dtype="earthquake", lat="-6.8", lon="107.1", loc="Cianjur", thr="5.0")
+    _approve(direct_vm, c, direct_owner, "EQH-1")
+    direct_vm.sender = direct_alice
+    c.assess_claim("EQH-1")
+    p = c.get_policy("EQH-1")
+    assert p["measured_value"] == "0.0"
+    assert p["trigger_met"] is False
     direct_vm.clear_mocks()
 
 

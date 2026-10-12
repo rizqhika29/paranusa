@@ -37,6 +37,11 @@ def _day_str(ts: int) -> str:
     return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%Y-%m-%d")
 
 
+def _iso_str(ts: int) -> str:
+    # Full UTC timestamp for APIs accepting datetime bounds (USGS).
+    return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def _parse_threshold(raw: str) -> float:
     try:
         return float(raw)
@@ -324,11 +329,14 @@ class ParaNusa(gl.Contract):
     def _window_days(self, pol) -> tuple:
         # Coverage interval as ISO days, computed deterministically OUTSIDE
         # nondet: [start_day, cap_day] where cap = min(today, end_day).
+        # Only COMPLETED days count: the tx day itself is still in progress
+        # (partial observations + forecast), so cap = min(yesterday, end_day).
         # Observations outside this interval MUST NOT influence the verdict.
         start_day = _day_str(int(pol.start_ts))
         end_day = _day_str(int(pol.end_ts))
         today = _day_str(_now_ts())
-        cap_day = end_day if end_day < today else today
+        yday = _day_str(_now_ts() - 86400)
+        cap_day = end_day if end_day < yday else yday
         return (start_day, cap_day)
 
     def _assess_drought(self, pol) -> dict:
@@ -512,14 +520,19 @@ class ParaNusa(gl.Contract):
         lat, lon = str(pol.lat), str(pol.lon)
         loc = str(pol.location_name)
         threshold = _parse_threshold(pol.threshold)
-        # Server-side coverage binding: USGS only returns events inside the
-        # policy window, so historical quakes can never trigger a payout.
-        win_start, win_cap = self._window_days(pol)
+        # EXACT coverage bounds (second precision, deterministic tx time).
+        # Date-only bounds could include pre-activation events or exclude
+        # late-day qualifying events, so both the server query AND a
+        # client-side event-time filter use exact timestamps.
+        start_ts = int(pol.start_ts)
+        now_ts = _now_ts()
+        end_ts = int(pol.end_ts)
+        cap_ts = end_ts if end_ts < now_ts else now_ts
         url = (
             "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson"
             + "&latitude=" + lat + "&longitude=" + lon
             + "&maxradiuskm=200&minmagnitude=4&limit=20&orderby=magnitude"
-            + "&starttime=" + win_start + "&endtime=" + win_cap
+            + "&starttime=" + _iso_str(start_ts) + "&endtime=" + _iso_str(cap_ts)
         )
 
         def leader_fn():
@@ -534,8 +547,23 @@ class ParaNusa(gl.Contract):
             try:
                 data = json.loads(res.body.decode("utf-8"))
                 feats = data.get("features", [])
-                mags = [f.get("properties", {}).get("mag", 0) for f in feats]
-                mags = [m for m in mags if isinstance(m, (int, float))]
+                mags = []
+                for f in feats:
+                    props = f.get("properties", {}) if isinstance(f, dict) else {}
+                    m = props.get("mag", 0)
+                    t = props.get("time", 0)
+                    # Only events that actually occurred inside the coverage
+                    # interval count. Compare in whole seconds: comparing epoch
+                    # milliseconds against second-precision bounds would wrongly
+                    # exclude events sharing the boundary second.
+                    try:
+                        tsecs = int(t) // 1000
+                    except Exception:
+                        continue
+                    if not isinstance(m, (int, float)):
+                        continue
+                    if start_ts <= tsecs <= cap_ts:
+                        mags.append(float(m))
                 max_mag = float(max(mags)) if mags else 0.0
             except Exception as e:
                 raise gl.vm.UserError(f"{ERROR_EXTERNAL} Bad USGS payload: {e}")
@@ -543,7 +571,7 @@ class ParaNusa(gl.Contract):
             prompt = (
                 "You are a parametric insurance oracle. Write ONE sentence of "
                 f"evidence for an earthquake assessment: max magnitude {max_mag} "
-                f"in coverage {win_start}..{win_cap} near {loc} ({lat},{lon}). "
+                f"in coverage {_iso_str(start_ts)}..{_iso_str(cap_ts)} near {loc} ({lat},{lon}). "
                 "You do NOT decide anything. "
                 'Return JSON: {"evidence": string}.'
             )
@@ -597,6 +625,8 @@ class ParaNusa(gl.Contract):
             int(h[2:], 16)
         except Exception:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Invalid tx hash (0x + 64 hex)")
+        if pol.assess_tx:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} Proof already linked")
         self.policies[policy_id].assess_tx = h
 
     @gl.public.write
