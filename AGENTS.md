@@ -234,6 +234,12 @@
       current Studionet (0 rounds, NO_MAJORITY) — ours (withdraw 0.5) AND
       Sibyl's live settle payout (0.001 GEN) alike. Pool debits but wallets are
       not credited. Reported with hashes; resubmit discloses honestly.
+- [x] Doc dive (fee-profiling + fee-debugging): children need `totalMessageFees`,
+      but NO working tool can attach it — `sim_*` missing on Studionet,
+      `estimate*Fees*` absent from compatible SDKs (v1 JS/py have no fee params),
+      CLI estimate needs simulation, CLI writes need TTY keychain. Kitty
+      (same stack: v1 + fee-less + external `_EoaRecipient`) stuck identically.
+      Fix is infra-side or needs a compatible fee path; NOT another redeploy.
 - [x] Updated envs + docs. Frontend rebuild + push pending.
 
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
