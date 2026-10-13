@@ -14,6 +14,22 @@ ERROR_TRANSIENT = "[TRANSIENT]"
 
 ALLOWED_DISASTERS = ("drought", "flood", "earthquake")
 
+# Holders and the owner are EOAs on the chain layer. Value sent to them MUST
+# travel the EXTERNAL message path (via the ghost contract). The internal IC
+# path (gl.get_contract_at(...).emit_transfer) never activates for EOAs:
+# funds leave the pool but never arrive (proven live on Studionet).
+@gl.evm.contract_interface
+class _EoaRecipient:
+    class View:
+        pass
+
+    class Write:
+        pass
+
+
+def _pay_eoa(dest: Address, amount: u256) -> None:
+    _EoaRecipient(dest).emit_transfer(value=amount)
+
 # Underwriting: premium must be >= 1% of payout (in basis points of 10000).
 MIN_PREMIUM_BPS = 100
 
@@ -252,7 +268,7 @@ class ParaNusa(gl.Contract):
         self.policies[policy_id].refunded = True
         if pol.premium > u256(0):
             self.total_refunds = self.total_refunds + pol.premium
-            gl.get_contract_at(pol.holder).emit_transfer(value=pol.premium)
+            _pay_eoa(pol.holder, pol.premium)
 
     @gl.public.write
     def approve_policy(self, policy_id: str, duration_days: u256) -> None:
@@ -294,7 +310,7 @@ class ParaNusa(gl.Contract):
         avail = balance - locked
         if amount > avail:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Amount exceeds withdrawable surplus")
-        gl.get_contract_at(self.owner).emit_transfer(value=amount)
+        _pay_eoa(self.owner, amount)
 
     # ---------- non-deterministic assessment ----------
 
@@ -653,7 +669,7 @@ class ParaNusa(gl.Contract):
         self.policies[policy_id].active = False
         self.total_payouts = self.total_payouts + pol.payout_amount
         self.total_locked = self.total_locked - pol.payout_amount
-        gl.get_contract_at(pol.holder).emit_transfer(value=pol.payout_amount)
+        _pay_eoa(pol.holder, pol.payout_amount)
 
     @gl.public.write
     def cancel_policy(self, policy_id: str) -> None:

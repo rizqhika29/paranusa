@@ -209,8 +209,7 @@
       (warp-covered); payout-on-new-revision pending a MET event.
 - [x] Updated envs + docs. Resubmit with full E2E matrix.
 
-### 2026-10-12 — Session 17: Steward precision review (3rd rejection fix) ✅
-- [x] USGS exact second-precision bounds (`starttime/endtime` full ISO) +
+### 2026-10-12 — Session 17: Steward precision review (3rd rejection fix) ✅- [x] USGS exact second-precision bounds (`starttime/endtime` full ISO) +
       client-side epoch-second filter (fixed ms-truncation bug that excluded
       boundary-second events); rain counts COMPLETED days only (tx day always
       excluded); `link_proof` one-time (no overwrite); frontend manual link
@@ -221,6 +220,21 @@
       quake assess 0.0 agreed, drought sparse-guard revert agreed,
       double-assess revert agreed, withdraw. Conservation holds.
 - [x] Updated envs + docs. Resubmit.
+
+### 2026-10-13 — Session 18: EOA payout path + stuck-children finding ✅
+- [x] Docs (value-transfers + messages): EOA recipients REQUIRE the external
+      path (`@gl.evm.contract_interface` + `emit_transfer`, via ghost contract).
+      The internal `gl.get_contract_at` path never activates for EOAs.
+- [x] Contract: `_EoaRecipient` interface + `_pay_eoa()` used by claim_payout,
+      withdraw_surplus, `_refund_premium` (matches live Sibyl `_Payee` pattern).
+- [x] `pytest tests/direct/`: **62 passed**. Lint methods:13.
+- [x] Redeployed `0x2d5f...c08Eb`. Verified live: fund, create SMOKE-1,
+      approve (window set). State transitions all MAJORITY_AGREE.
+- [x] NETWORK-WIDE FINDING: emitted child value-transfers are NOT processed on
+      current Studionet (0 rounds, NO_MAJORITY) — ours (withdraw 0.5) AND
+      Sibyl's live settle payout (0.001 GEN) alike. Pool debits but wallets are
+      not credited. Reported with hashes; resubmit discloses honestly.
+- [x] Updated envs + docs. Frontend rebuild + push pending.
 
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
       in validator stderr. Cause: nondet closures capturing `self` (via
@@ -251,8 +265,9 @@ fund_pool() [payable] — insurer funds GEN liquidity
 
 - Policy = `@allow_storage @dataclass Policy` in `TreeMap[str, Policy]`.
 - Threshold stored as `str`, parsed to `float` inside the contract.
-- Payout via `gl.get_contract_at(holder).emit_transfer(value=...)`. NEVER use
-  `self.transfer` (old API).
+- Payout via `_pay_eoa` (EXTERNAL message through `@gl.evm.contract_interface`).
+  Holders/owner are EOAs: the internal IC path (`gl.get_contract_at`) never
+  activates for EOAs (funds strand). NEVER use `self.transfer` (old API).
 - `assess` and `payout` are SEPARATED (human-in-the-loop, per security docs).
 
 ## 4. GENLAYER GOLDEN RULES (do not break!)
