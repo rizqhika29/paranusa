@@ -230,10 +230,13 @@
 - [x] `pytest tests/direct/`: **62 passed**. Lint methods:13.
 - [x] Redeployed `0x2d5f...c08Eb`. Verified live: fund, create SMOKE-1,
       approve (window set). State transitions all MAJORITY_AGREE.
-- [x] NETWORK-WIDE FINDING: emitted child value-transfers are NOT processed on
-      current Studionet (0 rounds, NO_MAJORITY) — ours (withdraw 0.5) AND
-      Sibyl's live settle payout (0.001 GEN) alike. Pool debits but wallets are
-      not credited. Reported with hashes; resubmit discloses honestly.
+- [x] NETWORK-WIDE FINDING (CORRECTED 2026-10-14): child value-transfers show
+      0 rounds / NO_MAJORITY — but that status does NOT mean failure. Proven
+      live: withdraw 0.1 GEN → owner balance credited EXACTLY +0.1
+      (42.9999… → 43.0999…). Pure EOA value moves need no validator rounds;
+      balance change is the proof, not child status. All past payouts almost
+      certainly arrived. Lesson: verify delivery via `getBalance`, never via
+      child consensus status.
 - [x] Doc dive (fee-profiling + fee-debugging): children need `totalMessageFees`,
       but NO working tool can attach it — `sim_*` missing on Studionet,
       `estimate*Fees*` absent from compatible SDKs (v1 JS/py have no fee params),
