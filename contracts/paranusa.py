@@ -178,6 +178,11 @@ class ParaNusa(gl.Contract):
     # Total payout of active policies (not paid/cancelled) - these funds are LOCKED,
     # cannot be withdrawn by owner via withdraw_surplus.
     total_locked: u256
+    # Last emitted value transfer, "kind:policy_id:amount" (e.g.
+    # "claim:DRO-1:500000000000000000"). If the child message errors, the
+    # value returns via __on_errored_message__, which uses this record to
+    # reverse exactly the right books instead of stranding funds.
+    pending_payout: str
 
     def __init__(self):
         self.owner = gl.message.sender_address
@@ -186,6 +191,7 @@ class ParaNusa(gl.Contract):
         self.total_payouts = u256(0)
         self.total_refunds = u256(0)
         self.total_locked = u256(0)
+        self.pending_payout = ""
 
     # ---------- helpers (deterministic, outside nondet) ----------
 
@@ -268,6 +274,7 @@ class ParaNusa(gl.Contract):
         self.policies[policy_id].refunded = True
         if pol.premium > u256(0):
             self.total_refunds = self.total_refunds + pol.premium
+            self.pending_payout = "refund:" + policy_id + ":" + str(int(pol.premium))
             _pay_eoa(pol.holder, pol.premium)
 
     @gl.public.write
@@ -310,6 +317,7 @@ class ParaNusa(gl.Contract):
         avail = balance - locked
         if amount > avail:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} Amount exceeds withdrawable surplus")
+        self.pending_payout = "withdraw::" + str(int(amount))
         _pay_eoa(self.owner, amount)
 
     # ---------- non-deterministic assessment ----------
@@ -669,6 +677,7 @@ class ParaNusa(gl.Contract):
         self.policies[policy_id].active = False
         self.total_payouts = self.total_payouts + pol.payout_amount
         self.total_locked = self.total_locked - pol.payout_amount
+        self.pending_payout = "claim:" + policy_id + ":" + str(int(pol.payout_amount))
         _pay_eoa(pol.holder, pol.payout_amount)
 
     @gl.public.write
@@ -726,6 +735,42 @@ class ParaNusa(gl.Contract):
         self.policies[policy_id].active = False
         if not pol.assessed:
             self._refund_premium(policy_id)
+
+    @gl.public.write.payable
+    def __on_errored_message__(self) -> None:
+        # A value transfer this contract sent has come back (the child
+        # message errored). Reverses exactly the books the matching payout
+        # touched, so failed transfers rejoin accounting instead of
+        # stranding funds. Anything unmatched is cleared, never guessed.
+        value = gl.message.value
+        pending = str(self.pending_payout)
+        self.pending_payout = ""
+        if value == u256(0):
+            return
+        i = pending.find(":")
+        j = pending.rfind(":")
+        if i < 0 or j <= i:
+            return
+        kind = pending[:i]
+        pid = pending[i + 1:j]
+        try:
+            amt = int(pending[j + 1:])
+        except Exception:
+            return
+        if amt <= 0 or int(value) != amt:
+            return
+        if kind == "claim" and pid in self.policies:
+            self.policies[pid].paid = False
+            self.policies[pid].active = True
+            self.total_locked = self.total_locked + u256(amt)
+            cur = self.total_payouts
+            self.total_payouts = cur - u256(amt) if cur >= u256(amt) else u256(0)
+        elif kind == "refund" and pid in self.policies:
+            self.policies[pid].refunded = False
+            cur = self.total_refunds
+            self.total_refunds = cur - u256(amt) if cur >= u256(amt) else u256(0)
+        # withdraw kind touches no totals (balance is chain-level): nothing
+        # else to reverse once the value is back.
 
     # ---------- views ----------
 

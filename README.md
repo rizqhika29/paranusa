@@ -3,7 +3,7 @@
 > **Drought, flood, and earthquake coverage that pays automatically from real-world data — no adjusters, no interpretation disputes, no centralized oracles.**
 
 [![GenLayer](https://img.shields.io/badge/GenLayer-Studionet-F5A524)](https://studio.genlayer.com/)
-[![Contract](https://img.shields.io/badge/contract-0x2d5f...c08Eb-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0x2d5f5310D01b19c2DBAA5ef6395dEaCE1Cc08Eb8)
+[![Contract](https://img.shields.io/badge/contract-0xbCAba...35dfa44-2DD4BF)](https://explorer-studio.genlayer.com/contracts/0xbCAba0D0F3750e463d41646F93C420A6E35dfa44)
 [![Tests](https://img.shields.io/badge/direct--tests-38%20passed-34D399)](#-testing)
 [![Frontend](https://img.shields.io/badge/frontend-Next.js_15-black)](./frontend)
 
@@ -23,7 +23,7 @@ No claim forms. No "under review". Data says yes → money moves.
 
 | | |
 |---|---|
-| **Contract** | [`0x2d5f5310D01b19c2DBAA5ef6395dEaCE1Cc08Eb8`](https://explorer-studio.genlayer.com/contracts/0x2d5f5310D01b19c2DBAA5ef6395dEaCE1Cc08Eb8) |
+| **Contract** | [`0xbCAba0D0F3750e463d41646F93C420A6E35dfa44`](https://explorer-studio.genlayer.com/contracts/0xbCAba0D0F3750e463d41646F93C420A6E35dfa44) |
 | **Network** | GenLayer Studionet (chain `61999`) |
 | **Frontend** | [`/app`](./frontend) — auto-connected via `.env.production` |
 

@@ -1054,3 +1054,68 @@ def test_contract_source_is_ascii_only():
     src = pathlib.Path("contracts/paranusa.py").read_text(encoding="utf-8")
     bad = sorted(set(c for c in src if ord(c) > 127))
     assert not bad, f"non-ASCII chars in contract: {[hex(ord(c)) for c in bad]}"
+
+
+def test_errored_claim_reopens_for_retry(direct_vm, direct_deploy, direct_owner, direct_alice):
+    # A failed payout transfer must rejoin accounting: claim reopened,
+    # lock restored, payout counter reversed. Simulated by invoking the
+    # protocol hook with the returned value (as the chain would).
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _mock_drought(direct_vm, 5.0)
+    _request(direct_vm, c, "RC-1", 50, 500)
+    _approve(direct_vm, c, direct_owner, "RC-1")
+    direct_vm.sender = direct_alice
+    c.assess_claim("RC-1")
+    _link(direct_vm, c, direct_alice, "RC-1")
+    c.claim_payout("RC-1")
+    assert c.get_policy("RC-1")["paid"] is True
+    # ...child message errors, value comes back through the hook...
+    direct_vm.value = 500
+    c.__on_errored_message__()
+    direct_vm.value = 0
+    p = c.get_policy("RC-1")
+    assert p["paid"] is False and p["active"] is True
+    s = c.get_stats()
+    assert s["total_locked"] == 500
+    assert s["total_payouts"] == 0
+    # ...and the holder can claim again.
+    c.claim_payout("RC-1")
+    assert c.get_policy("RC-1")["paid"] is True
+    direct_vm.clear_mocks()
+
+
+def test_errored_refund_resets_flag(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _request(direct_vm, c, "RC-2", 50, 500)
+    direct_vm.sender = direct_owner
+    c.reject_policy("RC-2")
+    assert c.get_stats()["total_refunds"] == 50
+    direct_vm.value = 50
+    c.__on_errored_message__()
+    direct_vm.value = 0
+    assert c.get_policy("RC-2")["refunded"] is False
+    assert c.get_stats()["total_refunds"] == 0
+
+
+def test_errored_mismatched_value_ignored(direct_vm, direct_deploy, direct_owner, direct_alice):
+    c = _deploy_as_owner(direct_vm, direct_deploy, direct_owner)
+    _fund(direct_vm, 5000)
+    direct_vm.sender = direct_alice
+    _mock_drought(direct_vm, 5.0)
+    _request(direct_vm, c, "RC-3", 50, 500)
+    _approve(direct_vm, c, direct_owner, "RC-3")
+    direct_vm.sender = direct_alice
+    c.assess_claim("RC-3")
+    _link(direct_vm, c, direct_alice, "RC-3")
+    c.claim_payout("RC-3")
+    # Wrong amount coming back: never guessed, state untouched.
+    direct_vm.value = 123
+    c.__on_errored_message__()
+    direct_vm.value = 0
+    assert c.get_policy("RC-3")["paid"] is True
+    assert c.get_stats()["total_payouts"] == 500
+    direct_vm.clear_mocks()

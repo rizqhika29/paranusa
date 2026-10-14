@@ -245,6 +245,20 @@
       withdraw (state). M-1 inactive+refunded; pool 7.55, locked 1.5.
 - [x] Updated envs + docs. Frontend rebuild + push pending.
 
+### 2026-10-14 — Session 19: Transfer-failure recovery + fideicommis study ✅
+- [x] Studied `rizqhika29/kitty-market` (same stack, stuck identically) and
+      `dhozil/fideicommis`: adopted its `__on_errored_message__` recovery —
+      failed child transfers rejoin books via `pending_payout` record
+      ("kind:policy:amount"): claim reopens for retry, refund resets flag,
+      withdraw needs nothing (no totals touched). Mismatched amounts ignored.
+- [x] `pytest tests/direct/`: **65 passed** (+3 recovery: reopen/retry,
+      refund-reset, mismatch-ignored). Lint clean (dunder hook accepted).
+- [x] Redeployed `0xbCAba...35dfa44`. Verified live: fund, SMOKE-2 request +
+      approve (MAJORITY_AGREE). Stuck-children remains network-wide (proven on
+      4 projects incl. fideicommis outgoing transfers today); recovery path is
+      contract-side for when children error.
+- [x] Updated envs + docs. Frontend rebuild + push pending.
+
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
       in validator stderr. Cause: nondet closures capturing `self` (via
       `self._compare_errors`) + `Policy` instances (storage class).
