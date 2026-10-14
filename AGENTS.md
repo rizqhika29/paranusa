@@ -248,8 +248,7 @@
       withdraw (state). M-1 inactive+refunded; pool 7.55, locked 1.5.
 - [x] Updated envs + docs. Frontend rebuild + push pending.
 
-### 2026-10-14 — Session 19: Transfer-failure recovery + fideicommis study ✅
-- [x] Studied `rizqhika29/kitty-market` (same stack, stuck identically) and
+### 2026-10-14 — Session 19: Transfer-failure recovery + fideicommis study ✅- [x] Studied `rizqhika29/kitty-market` (same stack, stuck identically) and
       `dhozil/fideicommis`: adopted its `__on_errored_message__` recovery —
       failed child transfers rejoin books via `pending_payout` record
       ("kind:policy:amount"): claim reopens for retry, refund resets flag,
@@ -261,6 +260,18 @@
       4 projects incl. fideicommis outgoing transfers today); recovery path is
       contract-side for when children error.
 - [x] Updated envs + docs. Frontend rebuild + push pending.
+
+### 2026-10-14 — Session 20: Current-contract full matrix for resubmit ✅
+- [x] On `0xbCAba` (all MAJORITY_AGREE FINALIZED): request EQ-PROBE/FLD-AGE,
+      approve x2, quake assess 0.0 (real windowed USGS, exact ISO bounds in
+      evidence), link_proof (assess_tx on-chain), double-assess revert
+      (agreed), unmet-claim revert (agreed), cancel (inactive).
+- [x] Withdraw 0.1 GEN on `0xbCAba`: owner balance +0.1 EXACTLY
+      (42.9999→43.0999) — child 0-round status does NOT mean failure; balance
+      change is the delivery proof. Lesson recorded, past payouts reclassified.
+- [x] Pending for a MET payout on current revision: FLD-AGE window ages in
+      ~3-4 days (flood needs 3 completed days); quake needs a real M4+ event.
+      Expiry likewise needs an aged window (warp-covered in direct tests).
 
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
       in validator stderr. Cause: nondet closures capturing `self` (via
