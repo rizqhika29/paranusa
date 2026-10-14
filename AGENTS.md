@@ -240,6 +240,9 @@
       CLI estimate needs simulation, CLI writes need TTY keychain. Kitty
       (same stack: v1 + fee-less + external `_EoaRecipient`) stuck identically.
       Fix is infra-side or needs a compatible fee path; NOT another redeploy.
+- [x] Full write-method matrix on current `0xA6aB` (all MAJORITY_AGREE):
+      request, approve, sparse-assess revert (agreed), cancel+refund,
+      withdraw (state). M-1 inactive+refunded; pool 7.55, locked 1.5.
 - [x] Updated envs + docs. Frontend rebuild + push pending.
 
 ### 2026-10-08 — Session 10: Storage-pickling warning (benign) ✅- [x] `Detected pickling storage class... nondet not supported` warning appears
