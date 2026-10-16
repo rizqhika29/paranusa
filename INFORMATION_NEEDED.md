@@ -42,6 +42,16 @@ Withdraw 0.1 GEN on current contract, tx `0x16d9c8772723534dd7ca0fdebfcf3a104288
 - **Credited exactly +0.1 GEN.** Pure EOA value moves need no validator
   rounds; the 0-round child status is normal, balance change is the proof.
 
+Premium refund round-trip on current contract (policy RF-1, 0.05 GEN premium):
+
+- Holder balance before request: `42999999999999999998` wei
+- Request `0x60877cddd4ec86be17c3e8e3b8cf0588cc5bae017e1b537e804729c376439d72`,
+  approve `0x9ae516a64bb05d5fe233f4fbdeead378d959a251077060aaa72fe0e8ec235fb5`,
+  cancel `0x32aebc0a061c6c00bd65e0ec5142d5d25c17ac2b62f1ed78e3bb6ea3ae43bb99`
+  (all MAJORITY_AGREE FINALIZED; policy inactive + `refunded=true`)
+- Holder balance after: `42999999999999999998` wei
+- **Premium left and returned exactly** (zero-fee testnet, exact accounting).
+
 Prior revision claim (same `_pay_eoa` primitive): EQ-LIVE claim
 `0x67c1622b5f315655a43e1deb90c5130b6a575dd62413ecd979a8abbb156fd489`
 on `0x3FA88596a9b88E1Ea81bbD5D90313d9d2C1e2599` — pool 5.15 → 4.65 GEN,
@@ -59,8 +69,9 @@ on `0x3FA88596a9b88E1Ea81bbD5D90313d9d2C1e2599` — pool 5.15 → 4.65 GEN,
 
 - Full drought payout: needs a 10-day-old coverage window (live window ages
   daily; warp-covered in direct tests).
-- Flood payout: FLD-AGE / FLD-PAY2 windows age in ~3–4 days, then assess →
-  link → claim → balance proof will be appended here.
+- Flood payout: FLD-AGE (window from 2026-10-14) becomes assessable once 3
+  completed in-window days exist, then assess → link → claim → balance
+  proof will be appended here.
 - Expiry + post-expiry recovery: needs a past-end window (warp-covered in
   direct tests: payable survives, unassessed refunds + releases, unmet
   releases without refund).
